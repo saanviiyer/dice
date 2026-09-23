@@ -1,0 +1,975 @@
+// vocalLooper.ts - a loop recorder with harmony overdub stacking that can
+// record either the microphone (voice), the instrument (synth output), or a mix
+// of both, and play back / export the finished stack.
+//
+// Capture uses a ScriptProcessorNode (reliable, no extra Vite worklet build) to
+// copy the chosen source's Float32 samples into a fixed-length loop buffer. Each
+// finished take becomes an AudioBufferSourceNode (loop=true) started on the
+// shared loop boundary, so every track stays phase-locked. Tracks route to the
+// provided output bus (the synth master record bus) so the master recorder
+// captures them too.
+//
+// Feedback safety: an "Instrument" take taps the synth INSTRUMENT bus (synth +
+// effects + harmonizer + drums) which does NOT include the loop tracks, so a loop
+// never records itself.
+//
+// The pure math (loop length, mix gain, boundary alignment, export duration,
+// source selection, WAV encoding) is exported separately and unit tested.
+
+import { computePeaks, loopPositionSec } from "./transport";
+
+export const BEATS_PER_BAR = 4;
+
+/** Loop length in samples for `bars` bars at `bpm` (4/4). */
+export function loopLengthSamples(
+  bpm: number,
+  bars: number,
+  sampleRate: number,
+  beatsPerBar = BEATS_PER_BAR
+): number {
+  const seconds = (bars * beatsPerBar * 60) / bpm;
+  return Math.max(1, Math.round(seconds * sampleRate));
+}
+
+/** Loop length in seconds for `bars` bars at `bpm` (4/4). */
+export function loopLengthSeconds(
+  bpm: number,
+  bars: number,
+  beatsPerBar = BEATS_PER_BAR
+): number {
+  return (bars * beatsPerBar * 60) / bpm;
+}
+
+/** Total export duration (seconds) for a number of loop cycles. */
+export function exportDurationSeconds(cycles: number, loopDurSec: number): number {
+  return Math.max(0, cycles) * Math.max(0, loopDurSec);
+}
+
+/** Total export length in samples for a number of loop cycles. */
+export function exportLengthSamples(
+  cycles: number,
+  loopDurSec: number,
+  sampleRate: number
+): number {
+  return Math.max(1, Math.ceil(exportDurationSeconds(cycles, loopDurSec) * sampleRate));
+}
+
+export type RecordSource = "mic" | "instrument" | "mix";
+
+/** Which physical inputs a source selection needs connected to the recorder. */
+export function sourcesForSelection(sel: RecordSource): ("mic" | "instrument")[] {
+  if (sel === "mic") return ["mic"];
+  if (sel === "instrument") return ["instrument"];
+  return ["mic", "instrument"];
+}
+
+export interface TrackMix {
+  muted: boolean;
+  solo: boolean;
+  volume: number; // 0..1
+}
+
+/**
+ * Effective gain for a track in an overdub stack. Muted tracks are silent; if
+ * any track is soloed, only soloed tracks are audible; otherwise the track's
+ * own volume applies.
+ */
+export function effectiveGain(t: TrackMix, anySolo: boolean): number {
+  if (t.muted) return 0;
+  if (anySolo && !t.solo) return 0;
+  return Math.max(0, Math.min(1, t.volume));
+}
+
+/** Peak absolute sample amplitude in a take (0 for an empty buffer). */
+export function peakAmplitude(samples: Float32Array): number {
+  let peak = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const a = Math.abs(samples[i]);
+    if (a > peak) peak = a;
+  }
+  return peak;
+}
+
+/**
+ * Per-take normalization makeup so a quiet vocal take is audibly present in the
+ * harmony stack (and not buried under the instrument), without amplifying
+ * near-silence into hiss. Returns 1 for an effectively silent take (peak below
+ * `noiseFloor`); otherwise the gain that brings `peak` to `target`, clamped to
+ * [`minGain`, `maxGain`] so no single take is boosted or ducked too hard. Pure
+ * and unit tested. The downstream loop-bus limiter catches the summed peaks.
+ */
+export function normalizeGain(
+  peak: number,
+  target = 0.7,
+  maxGain = 4,
+  noiseFloor = 0.02,
+  minGain = 0.5
+): number {
+  if (!(peak > noiseFloor)) return 1;
+  return Math.max(minGain, Math.min(maxGain, target / peak));
+}
+
+/**
+ * Time of the next loop boundary at or after `now`, given the loop's start time
+ * and duration. With no established loop (loopStart null) playback can start
+ * immediately, so `now` is returned.
+ */
+export function nextLoopBoundary(
+  now: number,
+  loopStart: number | null,
+  loopDur: number
+): number {
+  if (loopStart === null || loopDur <= 0) return now;
+  const elapsed = now - loopStart;
+  if (elapsed <= 0) return loopStart;
+  const k = Math.ceil(elapsed / loopDur - 1e-9);
+  return loopStart + k * loopDur;
+}
+
+/**
+ * Where a take sits inside the loop cycle: the timeline's model of one clip.
+ *
+ * A take is recorded a whole cycle long and that length is what keeps the stack
+ * phase-locked, so dragging or trimming one can never shorten its buffer. It
+ * moves the audio within a cycle-length buffer instead, which is what
+ * `renderLoopClip` does.
+ */
+export interface LoopClip {
+  /** Where the clip's first sample lands within the cycle, in seconds. */
+  offsetSec: number;
+  /** The part of the take that sounds, in seconds from the take's own head. */
+  trimStartSec: number;
+  trimEndSec: number;
+}
+
+/** Has this clip been moved or trimmed, or is it still the take as recorded? */
+export function isClipEdited(clip: LoopClip, takeDurSec: number): boolean {
+  const grain = 1e-4;
+  return (
+    clip.offsetSec > grain ||
+    clip.trimStartSec > grain ||
+    clip.trimEndSec < takeDurSec - grain
+  );
+}
+
+/**
+ * Render a clip into one cycle of audio: the trimmed window of the take,
+ * dropped at its offset, silence everywhere else.
+ *
+ * Rendering rather than rotating the playback node's read offset means the
+ * buffer is exactly what you hear, so the waveform drawn on the timeline, the
+ * WAV you download and the bounce all agree with each other for free. Anything
+ * that would run past the end of the cycle is cut there, because a clip that
+ * wrapped round to the top would sound like a mistake rather than a move.
+ */
+export function renderLoopClip(
+  take: Float32Array,
+  sampleRate: number,
+  clip: LoopClip,
+  loopDurSec: number
+): Float32Array {
+  const length =
+    loopDurSec > 0 ? Math.max(1, Math.round(loopDurSec * sampleRate)) : take.length;
+  const out = new Float32Array(length);
+  const clampIdx = (sec: number, hi: number) =>
+    Math.max(0, Math.min(hi, Math.round(sec * sampleRate)));
+  const from = clampIdx(clip.trimStartSec, take.length);
+  const to = Math.max(from, clampIdx(clip.trimEndSec, take.length));
+  const at = clampIdx(clip.offsetSec, length);
+  const count = Math.min(to - from, length - at);
+  if (count > 0) out.set(take.subarray(from, from + count), at);
+  return out;
+}
+
+/** Encode mono Float32 PCM as a 16-bit WAV file (returns the bytes). */
+export function encodeWavBytes(
+  samples: Float32Array,
+  sampleRate: number
+): ArrayBuffer {
+  const bytesPerSample = 2;
+  const buffer = new ArrayBuffer(44 + samples.length * bytesPerSample);
+  const view = new DataView(buffer);
+  const writeStr = (offset: number, s: string) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i));
+  };
+  writeStr(0, "RIFF");
+  view.setUint32(4, 36 + samples.length * bytesPerSample, true);
+  writeStr(8, "WAVE");
+  writeStr(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * bytesPerSample, true);
+  view.setUint16(32, bytesPerSample, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, "data");
+  view.setUint32(40, samples.length * bytesPerSample, true);
+  let off = 44;
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    off += bytesPerSample;
+  }
+  return buffer;
+}
+
+export interface LoopTrackState {
+  id: number;
+  name: string;
+  source: RecordSource;
+  muted: boolean;
+  solo: boolean;
+  volume: number;
+  /** The clip's audible length, which a trim shortens. */
+  durationSec: number;
+  /** Where the clip starts within the cycle, which a timeline drag moves. */
+  offsetSec: number;
+  /** The take as recorded, so the timeline knows what a trim is cutting from. */
+  takeDurationSec: number;
+}
+
+interface LoopTrack {
+  id: number;
+  /** What plays: the take as arranged. Rebuilt whenever the clip is edited. */
+  buffer: AudioBuffer;
+  /**
+   * The take as recorded. Edits always render from this, so trimming is not
+   * destructive and a trim can be widened again afterwards.
+   */
+  original: AudioBuffer;
+  clip: LoopClip;
+  gain: GainNode;
+  source: AudioBufferSourceNode | null;
+  muted: boolean;
+  solo: boolean;
+  volume: number;
+  /** Peak-normalization makeup baked at record time (presence, not user-set). */
+  normGain: number;
+  name: string;
+  recordSource: RecordSource;
+}
+
+export interface LooperConfig {
+  bpm: number;
+  bars: number;
+  free: boolean;
+}
+
+export interface LooperCycleProgress {
+  recorded: number;
+  target: number;
+  active: boolean;
+}
+
+/**
+ * Audio-graph controller for the looper. Not exercised by unit tests (needs an
+ * AudioContext); the pure helpers above are what get tested.
+ */
+export class VocalLooper {
+  private ctx: AudioContext;
+  private output: AudioNode;
+  private clickCb: (time: number, accent: boolean) => void;
+
+  // Dedicated loop bus: every take routes here, then through a safety limiter,
+  // so stacked harmonies stay clear and present instead of summing into a
+  // clipped mush. The live instrument does NOT pass through this, so the loop
+  // stack can be balanced without touching the played signal.
+  private loopBus: GainNode;
+  private limiter: DynamicsCompressorNode;
+
+  // The shared mic tap (the Synth's mic hub). The looper never creates its own
+  // MediaStreamAudioSourceNode: only one source node may exist per mic stream,
+  // or the recorder captures silence while another consumer (the harmonizer) owns
+  // the stream. See Synth.getMicNode().
+  private micSource: AudioNode | null = null;
+  private instrumentNode: AudioNode | null = null;
+
+  private sp: ScriptProcessorNode | null = null;
+  private silent: GainNode | null = null;
+  private captureSource: AudioNode | null = null;
+  private captureMix: GainNode | null = null;
+
+  private tracks: LoopTrack[] = [];
+  private loopStart: number | null = null;
+  private loopDur = 0; // seconds
+  private playing = false;
+
+  private cfg: LooperConfig = { bpm: 120, bars: 2, free: false };
+  private recordSource: RecordSource = "mic";
+
+  private recording = false;
+  private capture: Float32Array | null = null;
+  private writeIdx = 0;
+  private freeChunks: Float32Array[] = [];
+  private nextId = 1;
+  private countInTimer: ReturnType<typeof setTimeout> | null = null;
+  private cycleMode = false;
+  private cycleTarget = 0;
+  private cycleRecorded = 0;
+  private cycleSkip = 0;
+
+  onChange: (() => void) | null = null;
+
+  constructor(
+    ctx: AudioContext,
+    output: AudioNode,
+    clickCb: (time: number, accent: boolean) => void
+  ) {
+    this.ctx = ctx;
+    this.output = output;
+    this.clickCb = clickCb;
+
+    this.loopBus = ctx.createGain();
+    this.loopBus.gain.value = 1;
+    // Gentle safety limiter so many stacked harmony takes never clip.
+    this.limiter = ctx.createDynamicsCompressor();
+    this.limiter.threshold.value = -6;
+    this.limiter.knee.value = 0;
+    this.limiter.ratio.value = 20;
+    this.limiter.attack.value = 0.003;
+    this.limiter.release.value = 0.15;
+    this.loopBus.connect(this.limiter);
+    this.limiter.connect(this.output);
+  }
+
+  get isRecording(): boolean {
+    return this.recording || this.countInTimer !== null;
+  }
+  get isPlaying(): boolean {
+    return this.playing;
+  }
+  get trackCount(): number {
+    return this.tracks.length;
+  }
+  get loopDurationSec(): number {
+    return this.loopDur;
+  }
+  /** Playhead position within the cycle, in seconds. 0 when stopped. */
+  get positionSec(): number {
+    if (!this.playing) return 0;
+    return loopPositionSec(this.ctx.currentTime, this.loopStart, this.loopDur);
+  }
+  getCycleProgress(): LooperCycleProgress | null {
+    if (!this.cycleMode && this.cycleTarget <= 0) return null;
+    return { recorded: this.cycleRecorded, target: this.cycleTarget, active: this.isRecording };
+  }
+
+  setConfig(cfg: LooperConfig): void {
+    this.cfg = { ...cfg };
+  }
+  setRecordSource(sel: RecordSource): void {
+    this.recordSource = sel;
+  }
+
+  /**
+   * Provide the shared mic tap node (the Synth's mic hub, the SAME node the
+   * harmonizer and the level meter read). The looper does NOT create its own
+   * MediaStreamAudioSourceNode, so the recorder always receives the user's voice
+   * even while the harmonizer is also using the mic.
+   */
+  setMicNode(node: AudioNode): void {
+    this.micSource = node;
+  }
+
+  /** Provide the instrument tap node (the synth instrument bus). */
+  setInstrumentNode(node: AudioNode): void {
+    this.instrumentNode = node;
+  }
+
+  getStates(): LoopTrackState[] {
+    return this.tracks.map((t) => ({
+      id: t.id,
+      name: t.name,
+      source: t.recordSource,
+      muted: t.muted,
+      solo: t.solo,
+      volume: t.volume,
+      durationSec: Math.max(0, t.clip.trimEndSec - t.clip.trimStartSec),
+      offsetSec: t.clip.offsetSec,
+      takeDurationSec: t.original.duration,
+    }));
+  }
+
+  /** True when the current selection has the inputs it needs available. */
+  canRecord(): boolean {
+    const kinds = sourcesForSelection(this.recordSource);
+    for (const k of kinds) {
+      if (k === "mic" && !this.micSource) return false;
+      if (k === "instrument" && !this.instrumentNode) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Arm and begin recording a take. An optional count-in of `countInBars` bars
+   * plays metronome clicks first. Bars mode captures a fixed length; free mode
+   * captures until stopRecording() when it is the first take.
+   */
+  arm(countInBars: number): void {
+    if (this.isRecording || !this.canRecord()) return;
+    this.cycleMode = false;
+    this.cycleTarget = 0;
+    this.cycleRecorded = 0;
+    this.scheduleCapture(countInBars);
+  }
+
+  /** Continuously capture one phase-locked take per pass, then stop automatically. */
+  armCycle(countInBars: number, takes: number): void {
+    if (this.isRecording || !this.canRecord() || this.cfg.free) return;
+    this.cycleMode = true;
+    this.cycleTarget = Math.max(2, Math.min(12, Math.round(takes) || 3));
+    this.cycleRecorded = 0;
+    this.scheduleCapture(countInBars);
+  }
+
+  private scheduleCapture(countInBars: number): void {
+    const barDur = (60 / this.cfg.bpm) * BEATS_PER_BAR;
+    const clickBars = Math.max(0, Math.floor(countInBars));
+
+    if (clickBars > 0) {
+      const now = this.ctx.currentTime + 0.06;
+      for (let b = 0; b < clickBars; b++) {
+        for (let beat = 0; beat < BEATS_PER_BAR; beat++) {
+          const t = now + (b * BEATS_PER_BAR + beat) * (60 / this.cfg.bpm);
+          this.clickCb(t, beat === 0);
+        }
+      }
+      const delayMs = clickBars * barDur * 1000;
+      this.countInTimer = setTimeout(() => {
+        this.countInTimer = null;
+        this.beginCapture();
+      }, delayMs);
+      this.onChange?.();
+    } else {
+      this.beginCapture();
+    }
+  }
+
+  private resolveCaptureSource(): AudioNode | null {
+    const kinds = sourcesForSelection(this.recordSource);
+    if (kinds.length === 1) {
+      return kinds[0] === "mic" ? this.micSource : this.instrumentNode;
+    }
+    // Mix: sum mic + instrument into a temporary gain.
+    const mix = this.ctx.createGain();
+    if (this.micSource) this.micSource.connect(mix);
+    if (this.instrumentNode) this.instrumentNode.connect(mix);
+    this.captureMix = mix;
+    return mix;
+  }
+
+  private beginCapture(): void {
+    const src = this.resolveCaptureSource();
+    if (!src) return;
+    this.recording = true;
+    const sr = this.ctx.sampleRate;
+
+    const fixedLen =
+      this.loopDur > 0
+        ? Math.round(this.loopDur * sr)
+        : this.cfg.free
+          ? 0 // free + first take: grow until stop
+          : loopLengthSamples(this.cfg.bpm, this.cfg.bars, sr);
+
+    this.writeIdx = 0;
+    this.freeChunks = [];
+    this.capture = fixedLen > 0 ? new Float32Array(fixedLen) : null;
+    this.cycleSkip = 0;
+    if (this.cycleMode && this.capture) {
+      if (this.loopDur > 0 && this.loopStart !== null) {
+        const boundary = nextLoopBoundary(this.ctx.currentTime, this.loopStart, this.loopDur);
+        this.cycleSkip = Math.max(0, Math.round((boundary - this.ctx.currentTime) * sr));
+      } else {
+        this.loopDur = this.capture.length / sr;
+        this.loopStart = this.ctx.currentTime;
+      }
+    }
+
+    const sp = this.ctx.createScriptProcessor(2048, 1, 1);
+    const silent = this.ctx.createGain();
+    silent.gain.value = 0;
+    src.connect(sp);
+    sp.connect(silent);
+    silent.connect(this.ctx.destination);
+    sp.onaudioprocess = (e) => this.cycleMode ? this.onCycleAudio(e) : this.onAudio(e);
+    this.sp = sp;
+    this.silent = silent;
+    this.captureSource = src;
+    this.onChange?.();
+  }
+
+  private onAudio(e: AudioProcessingEvent): void {
+    if (!this.recording) return;
+    const input = e.inputBuffer.getChannelData(0);
+    if (this.capture) {
+      const remaining = this.capture.length - this.writeIdx;
+      const n = Math.min(remaining, input.length);
+      this.capture.set(input.subarray(0, n), this.writeIdx);
+      this.writeIdx += n;
+      if (this.writeIdx >= this.capture.length) this.finalize();
+    } else {
+      this.freeChunks.push(new Float32Array(input));
+    }
+  }
+
+  private onCycleAudio(e: AudioProcessingEvent): void {
+    if (!this.recording || !this.capture) return;
+    const input = e.inputBuffer.getChannelData(0);
+    let i = 0;
+    if (this.cycleSkip > 0) {
+      const skipped = Math.min(this.cycleSkip, input.length);
+      this.cycleSkip -= skipped;
+      i = skipped;
+    }
+    while (i < input.length && this.recording && this.capture) {
+      const n = Math.min(this.capture.length - this.writeIdx, input.length - i);
+      this.capture.set(input.subarray(i, i + n), this.writeIdx);
+      this.writeIdx += n;
+      i += n;
+      if (this.writeIdx >= this.capture.length) {
+        const finished: Float32Array = this.capture;
+        this.capture = new Float32Array(finished.length);
+        this.writeIdx = 0;
+        this.commitCycleTake(finished);
+      }
+    }
+  }
+
+  /** Stop a free-mode first take (fixed takes stop themselves when full). */
+  stopRecording(): void {
+    if (this.countInTimer) {
+      clearTimeout(this.countInTimer);
+      this.countInTimer = null;
+      this.recording = false;
+      this.teardownCapture();
+      this.onChange?.();
+      return;
+    }
+    if (!this.recording) return;
+    if (this.cycleMode) {
+      this.endCycleCapture();
+      return;
+    }
+    if (!this.capture) {
+      const total = this.freeChunks.reduce((a, c) => a + c.length, 0);
+      const buf = new Float32Array(Math.max(1, total));
+      let o = 0;
+      for (const c of this.freeChunks) {
+        buf.set(c, o);
+        o += c.length;
+      }
+      this.capture = buf;
+      this.writeIdx = buf.length;
+    }
+    this.finalize();
+  }
+
+  private commitCycleTake(data: Float32Array): void {
+    this.cycleRecorded += 1;
+    const track = this.makeTake(data, `Stack ${this.cycleRecorded}`);
+    const startAt = nextLoopBoundary(this.ctx.currentTime + 0.02, this.loopStart, this.loopDur);
+    this.startTrack(track, startAt);
+    this.playing = true;
+    this.applyMix();
+    if (this.cycleRecorded >= this.cycleTarget) this.endCycleCapture();
+    else this.onChange?.();
+  }
+
+  private endCycleCapture(): void {
+    this.recording = false;
+    this.cycleMode = false;
+    this.capture = null;
+    this.writeIdx = 0;
+    this.cycleSkip = 0;
+    this.teardownCapture();
+    this.onChange?.();
+  }
+
+  private teardownCapture(): void {
+    if (this.sp) {
+      this.sp.onaudioprocess = null;
+      try {
+        if (this.captureSource) this.captureSource.disconnect(this.sp);
+      } catch {
+        /* ignore */
+      }
+      try {
+        this.sp.disconnect();
+      } catch {
+        /* ignore */
+      }
+    }
+    if (this.silent) {
+      try {
+        this.silent.disconnect();
+      } catch {
+        /* ignore */
+      }
+    }
+    if (this.captureMix) {
+      try {
+        this.micSource?.disconnect(this.captureMix);
+      } catch {
+        /* ignore */
+      }
+      try {
+        this.instrumentNode?.disconnect(this.captureMix);
+      } catch {
+        /* ignore */
+      }
+      try {
+        this.captureMix.disconnect();
+      } catch {
+        /* ignore */
+      }
+      this.captureMix = null;
+    }
+    this.sp = null;
+    this.silent = null;
+    this.captureSource = null;
+  }
+
+  private startTrack(track: LoopTrack, when: number): void {
+    const source = this.ctx.createBufferSource();
+    source.buffer = track.buffer;
+    source.loop = true;
+    source.connect(track.gain);
+    source.start(when);
+    track.source = source;
+  }
+
+  private stopTrackSource(track: LoopTrack): void {
+    if (track.source) {
+      try {
+        track.source.stop();
+      } catch {
+        /* ignore */
+      }
+      try {
+        track.source.disconnect();
+      } catch {
+        /* ignore */
+      }
+      track.source = null;
+    }
+  }
+
+  private makeTake(data: Float32Array, name?: string): LoopTrack {
+    const sr = this.ctx.sampleRate;
+    const buffer = this.ctx.createBuffer(1, data.length, sr);
+    buffer.getChannelData(0).set(data);
+    const gain = this.ctx.createGain();
+    gain.connect(this.loopBus);
+    const track: LoopTrack = {
+      id: this.nextId++,
+      buffer,
+      original: buffer,
+      clip: { offsetSec: 0, trimStartSec: 0, trimEndSec: buffer.duration },
+      gain,
+      source: null,
+      muted: false,
+      solo: false,
+      volume: 0.9,
+      normGain: normalizeGain(peakAmplitude(data)),
+      name: name ?? `Take ${this.nextId - 1}`,
+      recordSource: this.recordSource,
+    };
+    this.tracks.push(track);
+    return track;
+  }
+
+  private finalize(): void {
+    this.recording = false;
+    const data = this.capture ?? new Float32Array(1);
+    this.teardownCapture();
+
+    const track = this.makeTake(data);
+    const buffer = track.buffer;
+    this.capture = null;
+    this.freeChunks = [];
+
+    if (this.loopStart === null) {
+      // First take establishes the loop length and starts the transport.
+      this.loopDur = this.cfg.free
+        ? buffer.duration
+        : loopLengthSeconds(this.cfg.bpm, this.cfg.bars);
+      this.playAll();
+    } else if (this.playing) {
+      // Overdub while playing: align the new track to the running loop.
+      const startAt = nextLoopBoundary(
+        this.ctx.currentTime + 0.02,
+        this.loopStart,
+        this.loopDur
+      );
+      this.startTrack(track, startAt);
+      this.applyMix();
+    } else {
+      // Was stopped: restart the whole stack aligned so overdub monitoring works.
+      this.playAll();
+    }
+    this.onChange?.();
+  }
+
+  private applyMix(): void {
+    const anySolo = this.tracks.some((t) => t.solo);
+    const now = this.ctx.currentTime;
+    for (const t of this.tracks) {
+      t.gain.gain.setTargetAtTime(
+        effectiveGain(t, anySolo) * t.normGain,
+        now,
+        0.02
+      );
+    }
+  }
+
+  /** Start every track phase-locked from a fresh loop anchor. */
+  playAll(): void {
+    if (this.tracks.length === 0 || this.loopDur <= 0) return;
+    for (const t of this.tracks) this.stopTrackSource(t);
+    const startAt = this.ctx.currentTime + 0.08;
+    this.loopStart = startAt;
+    for (const t of this.tracks) this.startTrack(t, startAt);
+    this.playing = true;
+    this.applyMix();
+    this.onChange?.();
+  }
+
+  /** Stop all loop-track playback (buffers are kept). */
+  stopAll(): void {
+    for (const t of this.tracks) this.stopTrackSource(t);
+    this.playing = false;
+    this.onChange?.();
+  }
+
+  /**
+   * Re-render a clip after a move or a trim and put it back in the loop.
+   *
+   * An untouched clip keeps playing its original buffer rather than a copy of
+   * it, so the common case - a stack of takes nobody has dragged - costs no
+   * extra memory at all.
+   */
+  private applyClipEdit(track: LoopTrack): void {
+    const take = track.original.getChannelData(0);
+    const sr = track.original.sampleRate;
+    if (!isClipEdited(track.clip, track.original.duration)) {
+      track.buffer = track.original;
+    } else {
+      const rendered = renderLoopClip(take, sr, track.clip, this.loopDur);
+      const buffer = this.ctx.createBuffer(1, rendered.length, sr);
+      buffer.getChannelData(0).set(rendered);
+      track.buffer = buffer;
+    }
+    // The edit is heard from the top of the next cycle. Swapping the buffer
+    // under a running source mid-bar would drop the take out of phase with the
+    // rest of the stack, which is the one thing a looper must never do.
+    if (this.playing && track.source) {
+      const startAt = nextLoopBoundary(
+        this.ctx.currentTime + 0.02,
+        this.loopStart,
+        this.loopDur
+      );
+      this.stopTrackSource(track);
+      this.startTrack(track, startAt);
+    }
+    this.onChange?.();
+  }
+
+  /** Move a clip's downbeat to `offsetSec` within the cycle (timeline drag). */
+  setTrackOffset(id: number, offsetSec: number): void {
+    const t = this.tracks.find((x) => x.id === id);
+    if (!t) return;
+    const clipDur = Math.max(0, t.clip.trimEndSec - t.clip.trimStartSec);
+    const span = this.loopDur > 0 ? this.loopDur : t.original.duration;
+    t.clip.offsetSec = Math.max(0, Math.min(Math.max(0, span - clipDur), offsetSec));
+    this.applyClipEdit(t);
+  }
+
+  /**
+   * Trim a clip to [startSec, endSec] within the cycle. Both are cycle
+   * positions, the same coordinates the timeline drags in, so the window is
+   * measured against where the clip sits rather than against the take's head.
+   */
+  trimTrack(id: number, startSec: number, endSec: number): void {
+    const t = this.tracks.find((x) => x.id === id);
+    if (!t) return;
+    const takeDur = t.original.duration;
+    const head = t.clip.trimStartSec - t.clip.offsetSec; // cycle -> take
+    const from = Math.max(0, Math.min(takeDur, startSec + head));
+    const to = Math.max(from, Math.min(takeDur, endSec + head));
+    t.clip = {
+      offsetSec: Math.max(0, startSec),
+      trimStartSec: from,
+      trimEndSec: to,
+    };
+    this.applyClipEdit(t);
+  }
+
+  /** Copy a take into a new track, so a phrase can be layered on itself. */
+  duplicateTrack(id: number): void {
+    const t = this.tracks.find((x) => x.id === id);
+    if (!t) return;
+    const copy = this.makeTake(t.original.getChannelData(0).slice(), `${t.name} copy`);
+    copy.clip = { ...t.clip };
+    copy.volume = t.volume;
+    copy.recordSource = t.recordSource;
+    this.applyClipEdit(copy);
+    if (this.playing && this.loopStart !== null && this.loopDur > 0) {
+      const startAt = nextLoopBoundary(
+        this.ctx.currentTime + 0.02,
+        this.loopStart,
+        this.loopDur
+      );
+      this.startTrack(copy, startAt);
+      this.applyMix();
+    }
+    this.onChange?.();
+  }
+
+  /** Peak buckets for drawing a take's waveform on the timeline. */
+  getPeaks(id: number, buckets: number): number[] | null {
+    const t = this.tracks.find((x) => x.id === id);
+    if (!t) return null;
+    // From the take, not the rendered clip: the timeline draws the waveform
+    // inside the clip rectangle, so leading silence from an offset would push
+    // the picture out of the box it is drawn in.
+    const data = t.original.getChannelData(0);
+    const from = Math.max(0, Math.round(t.clip.trimStartSec * t.original.sampleRate));
+    const to = Math.max(from, Math.round(t.clip.trimEndSec * t.original.sampleRate));
+    return computePeaks(data.subarray(from, to), buckets);
+  }
+
+  setMute(id: number, muted: boolean): void {
+    const t = this.tracks.find((x) => x.id === id);
+    if (t) {
+      t.muted = muted;
+      this.applyMix();
+      this.onChange?.();
+    }
+  }
+  setSolo(id: number, solo: boolean): void {
+    const t = this.tracks.find((x) => x.id === id);
+    if (t) {
+      t.solo = solo;
+      this.applyMix();
+      this.onChange?.();
+    }
+  }
+  setVolume(id: number, volume: number): void {
+    const t = this.tracks.find((x) => x.id === id);
+    if (t) {
+      t.volume = volume;
+      this.applyMix();
+      this.onChange?.();
+    }
+  }
+
+  deleteTrack(id: number): void {
+    const idx = this.tracks.findIndex((x) => x.id === id);
+    if (idx < 0) return;
+    const t = this.tracks[idx];
+    this.stopTrackSource(t);
+    t.gain.disconnect();
+    this.tracks.splice(idx, 1);
+    if (this.tracks.length === 0) {
+      this.loopStart = null;
+      this.loopDur = 0;
+      this.playing = false;
+    } else {
+      this.applyMix();
+    }
+    this.onChange?.();
+  }
+
+  clearAll(): void {
+    for (const t of this.tracks) {
+      this.stopTrackSource(t);
+      t.gain.disconnect();
+    }
+    this.tracks = [];
+    this.loopStart = null;
+    this.loopDur = 0;
+    this.playing = false;
+    this.onChange?.();
+  }
+
+  /** WAV bytes for one take, for download. */
+  getTrackWav(id: number): ArrayBuffer | null {
+    const t = this.tracks.find((x) => x.id === id);
+    if (!t) return null;
+    return encodeWavBytes(t.buffer.getChannelData(0), this.ctx.sampleRate);
+  }
+
+  /**
+   * Bounce the whole stack (all non-muted / soloed tracks, summed) for `cycles`
+   * loop cycles to a WAV file, via an OfflineAudioContext (fast, click-free).
+   */
+  async exportMix(cycles: number): Promise<ArrayBuffer | null> {
+    if (this.tracks.length === 0 || this.loopDur <= 0) return null;
+    const sr = this.ctx.sampleRate;
+    const frames = exportLengthSamples(cycles, this.loopDur, sr);
+    const oac = new OfflineAudioContext(1, frames, sr);
+    // Mirror the live loop bus + limiter so the bounce matches what is heard.
+    const bus = oac.createGain();
+    bus.gain.value = 1;
+    const lim = oac.createDynamicsCompressor();
+    lim.threshold.value = -6;
+    lim.knee.value = 0;
+    lim.ratio.value = 20;
+    lim.attack.value = 0.003;
+    lim.release.value = 0.15;
+    bus.connect(lim);
+    lim.connect(oac.destination);
+    const anySolo = this.tracks.some((t) => t.solo);
+    let any = false;
+    for (const t of this.tracks) {
+      const g = effectiveGain(t, anySolo);
+      if (g <= 0) continue;
+      any = true;
+      const s = oac.createBufferSource();
+      s.buffer = t.buffer;
+      s.loop = true;
+      const gn = oac.createGain();
+      gn.gain.value = g * t.normGain;
+      s.connect(gn);
+      gn.connect(bus);
+      s.start(0);
+    }
+    if (!any) return null;
+    const rendered = await oac.startRendering();
+    return encodeWavBytes(rendered.getChannelData(0), sr);
+  }
+  /**
+   * A take's recorded audio, for the beatbox transcriber to read.
+   *
+   * The raw buffer: pre-fader and pre-normalisation makeup, because the
+   * transcriber measures onsets and timbre, and a fader position is not part of
+   * what was played. Channel 0 only; the looper records mono.
+   */
+  getTrackAudio(id: number): { data: Float32Array; sampleRate: number } | null {
+    const t = this.tracks.find((x) => x.id === id);
+    if (!t) return null;
+    return { data: t.buffer.getChannelData(0), sampleRate: t.buffer.sampleRate };
+  }
+
+
+  dispose(): void {
+    if (this.countInTimer) clearTimeout(this.countInTimer);
+    this.recording = false;
+    this.teardownCapture();
+    this.clearAll();
+    try {
+      this.loopBus.disconnect();
+    } catch {
+      /* ignore */
+    }
+    try {
+      this.limiter.disconnect();
+    } catch {
+      /* ignore */
+    }
+    // The mic node is shared and owned by the Synth; just drop the reference.
+    // Any capture edges were already removed in teardownCapture().
+    this.micSource = null;
+  }
+}

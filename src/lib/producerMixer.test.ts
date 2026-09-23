@@ -1,0 +1,338 @@
+import { describe, it, expect } from "vitest";
+import {
+  clampPan,
+  createAmbienceImpulse,
+  exportSpanSec,
+  exportFrames,
+  encodeWavStereo,
+  sanitizeTrackName,
+  normalizeTrackColor,
+  LOW_CUT_MAX,
+  LOW_CUT_MIN,
+  MID_MAX_DB,
+  ProducerMixer,
+  toneFrequency,
+  vocalTakePan,
+} from "./producerMixer";
+import { effectiveGain } from "./vocalLooper";
+
+describe("clampPan", () => {
+  it("clamps to -1..1 and maps NaN to 0", () => {
+    expect(clampPan(0)).toBe(0);
+    expect(clampPan(0.3)).toBe(0.3);
+    expect(clampPan(5)).toBe(1);
+    expect(clampPan(-5)).toBe(-1);
+    expect(clampPan(NaN)).toBe(0);
+  });
+});
+
+function fakeMixerContext(): AudioContext {
+  const param = (value = 0) => ({
+    value,
+    setTargetAtTime(next: number) { this.value = next; },
+  });
+  const node = () => ({ connect() {}, disconnect() {} });
+  return {
+    currentTime: 0,
+    sampleRate: 48000,
+    destination: node(),
+    createGain: () => ({ ...node(), gain: param(1) }),
+    createDynamicsCompressor: () => ({
+      ...node(),
+      threshold: param(),
+      knee: param(),
+      ratio: param(),
+      attack: param(),
+      release: param(),
+    }),
+    createStereoPanner: () => ({ ...node(), pan: param(0) }),
+    // A real BiquadFilterNode always has a gain param; the peaking band of the
+    // channel EQ uses it, so the stub needs one too.
+    createBiquadFilter: () => ({
+      ...node(),
+      type: "lowpass",
+      frequency: param(20000),
+      Q: param(0.707),
+      gain: param(0),
+    }),
+    createConvolver: () => ({ ...node(), buffer: null }),
+    createBuffer: (channels: number, length: number, sampleRate: number) => {
+      const data = Array.from({ length: channels }, () => new Float32Array(length));
+      return {
+        duration: length / sampleRate,
+        sampleRate,
+        numberOfChannels: channels,
+        length,
+        getChannelData: (channel: number) => data[channel],
+      };
+    },
+  } as unknown as AudioContext;
+}
+
+function fakeAudioBuffer(): AudioBuffer {
+  return {
+    duration: 1,
+    sampleRate: 48000,
+    numberOfChannels: 1,
+    length: 48000,
+    getChannelData: () => new Float32Array(48000),
+  } as unknown as AudioBuffer;
+}
+
+describe("mixer edit history", () => {
+  it("undoes and redoes track creation without copying audio buffers", () => {
+    const ctx = fakeMixerContext();
+    const mixer = new ProducerMixer(ctx, ctx.destination);
+    mixer.addImportedTrack(fakeAudioBuffer(), "Guide");
+    expect(mixer.getStates()).toHaveLength(1);
+    expect(mixer.getHistoryState()).toEqual({ canUndo: true, canRedo: false });
+    expect(mixer.undo()).toBe(true);
+    expect(mixer.getStates()).toHaveLength(0);
+    expect(mixer.getHistoryState()).toEqual({ canUndo: false, canRedo: true });
+    expect(mixer.redo()).toBe(true);
+    expect(mixer.getStates()[0].name).toBe("Guide");
+  });
+
+  it("restores region color, tone, space, and comp-pick metadata", () => {
+    const ctx = fakeMixerContext();
+    const mixer = new ProducerMixer(ctx, ctx.destination);
+    const track = mixer.addImportedTrack(fakeAudioBuffer(), "Lead");
+    mixer.clearHistory();
+    mixer.setColor(track.id, "#38bdf8");
+    mixer.setTone(track.id, 0.4);
+    mixer.setSpace(track.id, 0.35);
+    mixer.setFavorite(track.id, true);
+    expect(mixer.getStates()[0]).toMatchObject({
+      color: "#38bdf8",
+      tone: 0.4,
+      space: 0.35,
+      favorite: true,
+    });
+    mixer.undo();
+    expect(mixer.getStates()[0].favorite).toBe(false);
+  });
+});
+
+describe("shared studio ambience", () => {
+  it("creates a decaying stereo impulse", () => {
+    const ctx = fakeMixerContext();
+    const impulse = createAmbienceImpulse(ctx, 1, 2);
+    expect(impulse.numberOfChannels).toBe(2);
+    expect(impulse.length).toBe(48000);
+    const left = impulse.getChannelData(0);
+    const early = Math.abs(left[100]);
+    const late = Math.abs(left[left.length - 100]);
+    expect(early).toBeGreaterThan(late);
+  });
+
+  it("preserves a track's Space send in project snapshots", () => {
+    const ctx = fakeMixerContext();
+    const mixer = new ProducerMixer(ctx, ctx.destination);
+    const track = mixer.addImportedTrack(fakeAudioBuffer(), "Lead");
+    mixer.setSpace(track.id, 0.42);
+    const snapshot = mixer.createSnapshot();
+    expect(snapshot.tracks[0].space).toBe(0.42);
+
+    const restored = new ProducerMixer(ctx, ctx.destination);
+    restored.restoreSnapshot(snapshot);
+    expect(restored.getStates()[0].space).toBe(0.42);
+  });
+});
+
+describe("sanitizeTrackName", () => {
+  it("normalizes user labels and rejects empty names", () => {
+    expect(sanitizeTrackName("  Lead\u0000 vocal  ")).toBe("Lead  vocal");
+    expect(sanitizeTrackName("", "Track 3")).toBe("Track 3");
+    expect(sanitizeTrackName("x".repeat(100))).toHaveLength(80);
+  });
+});
+
+describe("GarageBand-style track helpers", () => {
+  it("maps the tone knob perceptually from dark to bright", () => {
+    expect(toneFrequency(0)).toBeCloseTo(500);
+    expect(toneFrequency(1)).toBeCloseTo(20000);
+    expect(toneFrequency(0.5)).toBeGreaterThan(2500);
+  });
+
+  it("spreads vocal stack takes evenly across the stereo field", () => {
+    expect(vocalTakePan(0, 1, 1)).toBe(0);
+    expect([0, 1, 2].map((i) => vocalTakePan(i, 3, 0.6))).toEqual([-0.6, 0, 0.6]);
+    expect(vocalTakePan(20, 3, 5)).toBe(1);
+  });
+
+  it("accepts safe region colors and falls back for damaged saves", () => {
+    expect(normalizeTrackColor("#38bdf8")).toBe("#38bdf8");
+    expect(normalizeTrackColor("red", "#ffd400")).toBe("#ffd400");
+  });
+});
+
+describe("mixer gain/mute/solo math (reused effectiveGain)", () => {
+  it("mutes silence a track", () => {
+    expect(effectiveGain({ muted: true, solo: false, volume: 1 }, false)).toBe(0);
+  });
+  it("non-soloed tracks are silent when any track is soloed", () => {
+    expect(effectiveGain({ muted: false, solo: false, volume: 1 }, true)).toBe(0);
+    expect(effectiveGain({ muted: false, solo: true, volume: 0.8 }, true)).toBe(
+      0.8
+    );
+  });
+  it("plain volume applies with no solo active", () => {
+    expect(effectiveGain({ muted: false, solo: false, volume: 0.6 }, false)).toBe(
+      0.6
+    );
+  });
+});
+
+describe("exportSpanSec", () => {
+  it("uses the transport loop when present", () => {
+    expect(exportSpanSec(4, 30)).toBe(4);
+  });
+  it("falls back to the longest stem when there is no loop", () => {
+    expect(exportSpanSec(0, 12)).toBe(12);
+  });
+  it("is zero when nothing to export", () => {
+    expect(exportSpanSec(0, 0)).toBe(0);
+  });
+});
+
+describe("exportFrames", () => {
+  it("computes cycles * span * sampleRate", () => {
+    expect(exportFrames(2, 4, 48000)).toBe(2 * 4 * 48000);
+  });
+  it("is at least one frame", () => {
+    expect(exportFrames(0, 0, 48000)).toBe(1);
+  });
+});
+
+describe("encodeWavStereo", () => {
+  it("writes a valid 2-channel 16-bit WAV header", () => {
+    const left = new Float32Array([0, 0.5, -0.5, 1]);
+    const right = new Float32Array([0, -0.5, 0.5, -1]);
+    const buf = encodeWavStereo(left, right, 44100);
+    const view = new DataView(buf);
+    // "RIFF"
+    expect(String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3))).toBe("RIFF");
+    // "WAVE"
+    expect(String.fromCharCode(view.getUint8(8), view.getUint8(9), view.getUint8(10), view.getUint8(11))).toBe("WAVE");
+    expect(view.getUint16(22, true)).toBe(2); // channels
+    expect(view.getUint32(24, true)).toBe(44100); // sample rate
+    expect(view.getUint16(32, true)).toBe(4); // block align (2ch * 2 bytes)
+    expect(view.getUint16(34, true)).toBe(16); // bits per sample
+    // data length = frames * blockAlign
+    expect(view.getUint32(40, true)).toBe(4 * 4);
+    // total size = 44 + data
+    expect(buf.byteLength).toBe(44 + 4 * 4);
+  });
+
+  it("interleaves L/R samples and clips to full scale", () => {
+    const left = new Float32Array([1]);
+    const right = new Float32Array([-1]);
+    const buf = encodeWavStereo(left, right, 8000);
+    const view = new DataView(buf);
+    expect(view.getInt16(44, true)).toBe(0x7fff); // L clipped +
+    expect(view.getInt16(46, true)).toBe(-0x8000); // R clipped -
+  });
+
+  it("uses the shorter channel length when lengths differ", () => {
+    const left = new Float32Array([0, 0, 0]);
+    const right = new Float32Array([0]);
+    const buf = encodeWavStereo(left, right, 8000);
+    expect(new DataView(buf).getUint32(40, true)).toBe(1 * 4);
+  });
+})
+
+describe("channel EQ", () => {
+  it("starts out of the way, so a new track sounds untouched", () => {
+    const ctx = fakeMixerContext();
+    const mixer = new ProducerMixer(ctx, ctx.destination);
+    const t = mixer.addImportedTrack(fakeAudioBuffer(), "Part");
+    const state = mixer.getStates().find((x) => x.id === t.id)!;
+    expect(state.lowCut).toBe(LOW_CUT_MIN);
+    expect(state.midGain).toBe(0);
+  });
+
+  it("sets and clamps the low cut", () => {
+    const ctx = fakeMixerContext();
+    const mixer = new ProducerMixer(ctx, ctx.destination);
+    const t = mixer.addImportedTrack(fakeAudioBuffer(), "Part");
+    mixer.setLowCut(t.id, 120);
+    expect(mixer.getStates()[0].lowCut).toBe(120);
+    mixer.setLowCut(t.id, 9999);
+    expect(mixer.getStates()[0].lowCut).toBe(LOW_CUT_MAX);
+    mixer.setLowCut(t.id, -5);
+    expect(mixer.getStates()[0].lowCut).toBe(LOW_CUT_MIN);
+  });
+
+  it("sets and clamps the mid bell in both directions", () => {
+    const ctx = fakeMixerContext();
+    const mixer = new ProducerMixer(ctx, ctx.destination);
+    const t = mixer.addImportedTrack(fakeAudioBuffer(), "Part");
+    mixer.setMidGain(t.id, -4.5);
+    expect(mixer.getStates()[0].midGain).toBe(-4.5);
+    mixer.setMidGain(t.id, 99);
+    expect(mixer.getStates()[0].midGain).toBe(MID_MAX_DB);
+    mixer.setMidGain(t.id, -99);
+    expect(mixer.getStates()[0].midGain).toBe(-MID_MAX_DB);
+  });
+
+  it("keeps the EQ through undo and redo", () => {
+    const ctx = fakeMixerContext();
+    const mixer = new ProducerMixer(ctx, ctx.destination);
+    const t = mixer.addImportedTrack(fakeAudioBuffer(), "Part");
+    mixer.setLowCut(t.id, 150);
+    mixer.setMidGain(t.id, -6);
+    mixer.setLowCut(t.id, 300);
+    expect(mixer.getStates()[0].lowCut).toBe(300);
+    mixer.undo();
+    expect(mixer.getStates()[0].lowCut).toBe(150);
+    expect(mixer.getStates()[0].midGain).toBe(-6);
+    mixer.redo();
+    expect(mixer.getStates()[0].lowCut).toBe(300);
+  });
+
+  it("carries the EQ into a duplicated track", () => {
+    const ctx = fakeMixerContext();
+    const mixer = new ProducerMixer(ctx, ctx.destination);
+    const t = mixer.addImportedTrack(fakeAudioBuffer(), "Part");
+    mixer.setLowCut(t.id, 220);
+    mixer.setMidGain(t.id, 3);
+    const copy = mixer.duplicateTrack(t.id)!;
+    const state = mixer.getStates().find((x) => x.id === copy.id)!;
+    expect(state.lowCut).toBe(220);
+    expect(state.midGain).toBe(3);
+  });
+
+  it("saves and restores the EQ with the project", () => {
+    const ctx = fakeMixerContext();
+    const mixer = new ProducerMixer(ctx, ctx.destination);
+    const t = mixer.addImportedTrack(fakeAudioBuffer(), "Part");
+    mixer.setLowCut(t.id, 180);
+    mixer.setMidGain(t.id, -7.5);
+    const snapshot = mixer.createSnapshot();
+
+    const fresh = new ProducerMixer(ctx, ctx.destination);
+    fresh.restoreSnapshot(snapshot);
+    const state = fresh.getStates()[0];
+    expect(state.lowCut).toBe(180);
+    expect(state.midGain).toBe(-7.5);
+  });
+
+  it("opens a project saved before the EQ existed without changing its sound", () => {
+    const ctx = fakeMixerContext();
+    const mixer = new ProducerMixer(ctx, ctx.destination);
+    const t = mixer.addImportedTrack(fakeAudioBuffer(), "Part");
+    const snapshot = mixer.createSnapshot();
+    // An older project simply has no such fields.
+    for (const track of snapshot.tracks) {
+      delete (track as { lowCut?: number }).lowCut;
+      delete (track as { midGain?: number }).midGain;
+    }
+    void t;
+
+    const fresh = new ProducerMixer(ctx, ctx.destination);
+    fresh.restoreSnapshot(snapshot);
+    const state = fresh.getStates()[0];
+    expect(state.lowCut).toBe(LOW_CUT_MIN);
+    expect(state.midGain).toBe(0);
+  });
+});

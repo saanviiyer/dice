@@ -1,0 +1,39 @@
+{
+  "name": "dice",
+  "private": true,
+  "version": "0.1.0",
+  "description": "dice is a hand-gesture instrument, a vocal studio, and a producer agent that mixes your takes and tells you why.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "fetch:model": "node scripts/fetch-model.mjs",
+    "copy:wasm": "node scripts/copy-wasm.mjs",
+    "postinstall": "node scripts/copy-wasm.mjs && node scripts/fetch-model.mjs",
+    "desktop": "npm run build && electron .",
+    "desktop:dev": "electron .",
+    "desktop:build": "npm run build && node scripts/package-desktop.mjs"
+  },
+  "dependencies": {
+    "@mediapipe/tasks-vision": "0.10.14",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@electron/packager": "^18.4.4",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.19",
+    "electron": "^33.4.11",
+    "postcss": "^8.4.39",
+    "tailwindcss": "^3.4.7",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.0",
+    "vitest": "^2.0.5"
+  },
+  "main": "desktop/main.cjs"
+}

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>dice — produce music like a pro</title>
+    <meta
+      name="description"
+      content="dice turns your voice and your hands into a finished record: perform with webcam hand gestures, stack harmonies, and let the producer agent mix it and tell you why."
+    />
+    <meta name="theme-color" content="#3d1610" />
+    <link rel="icon" type="image/svg+xml" href="./dice.svg" />
+    <link rel="apple-touch-icon" href="./dice.svg" />
+
+    <meta property="og:title" content="dice — produce music like a pro" />
+    <meta
+      property="og:description"
+      content="A hand-gesture instrument, a vocal studio, and a producer agent that mixes your takes and tells you why."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="./dice.svg" />
+    <meta name="twitter:card" content="summary" />
+
+    <!-- Painted before React mounts, so there is no white flash on the oxblood
+         ground while the bundle loads. -->
+    <style>
+      html,
+      body {
+        margin: 0;
+        background-color: #3d1610;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,154 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* dice - see src/brand.ts for the palette and the font-stack reasoning. */
+
+:root {
+  --dice-brick: #bb3a20;
+  --dice-brick-deep: #932c17;
+  --dice-maroon: #5e2318;
+  --dice-maroon-deep: #3d1610;
+  --dice-maroon-ink: #260c06;
+  --dice-salmon: #efaf9f;
+  --dice-salmon-dim: #cf8f7e;
+  --dice-bone: #d5d0cb;
+  --dice-bone-dim: #a99f97;
+  --dice-chalk: #f5f2ed;
+  --dice-live: #ff5a3d;
+  --dice-display: "Helvetica Neue", Inter, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+}
+
+html {
+  height: 100%;
+}
+
+/* min-height, not height. The studio is one screen, but the site scrolls for
+   several, and a fixed 100% height clips everything past the first viewport. */
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--dice-chalk);
+  font-family: var(--dice-display);
+  -webkit-font-smoothing: antialiased;
+  /* Maroon ground with a brick glow from the upper left, the way the content
+     pieces in the key art are lit. */
+  background-color: var(--dice-maroon-deep);
+  background-image:
+    radial-gradient(1100px 640px at 8% -14%, rgba(187, 58, 32, 0.55), transparent 62%),
+    radial-gradient(900px 520px at 100% 2%, rgba(239, 175, 159, 0.1), transparent 58%),
+    radial-gradient(900px 900px at 50% 118%, rgba(38, 12, 6, 0.85), transparent 62%),
+    linear-gradient(162deg, #5e2318 0%, #3d1610 58%, #260c06 100%);
+  /* Deliberately not `fixed`. The site scrolls for several screens, and a fixed
+     background forces a full-viewport repaint on every scroll frame, is
+     unreliable on iOS Safari, and breaks page capture. The gradient scrolling
+     with the page reads the same over this length anyway. */
+  background-repeat: no-repeat;
+}
+
+/* The wordmark. Heavy, lowercase, tight, italic, and it keeps its period. */
+.dice-wordmark {
+  font-family: var(--dice-display);
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: -0.035em;
+  line-height: 0.9;
+  text-transform: lowercase;
+}
+
+/* Headline treatment from the key art: heavy, lowercase, very tight leading. */
+.dice-display {
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 0.95;
+  text-transform: lowercase;
+}
+
+/* The emphasis device: the brand italicises the word it wants you to land on. */
+.dice-emph {
+  font-style: italic;
+}
+
+/* The key art draws its objects as thin bone line-work. */
+.dice-line {
+  stroke: var(--dice-bone);
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Interactive elements use the palette. `accent-color` alone leaves the
+   unfilled half of a range track in the platform's default colour, which on
+   macOS is a teal that has nothing to do with this brand, so the track is
+   painted explicitly. */
+input[type="range"] {
+  accent-color: var(--dice-salmon);
+  -webkit-appearance: none;
+  appearance: none;
+  height: 18px;
+  background: transparent;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(213, 208, 203, 0.28);
+}
+input[type="range"]::-moz-range-track {
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(213, 208, 203, 0.28);
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  margin-top: -5px;
+  border: none;
+  border-radius: 50%;
+  background: var(--dice-salmon);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 15px;
+  height: 15px;
+  border: none;
+  border-radius: 50%;
+  background: var(--dice-salmon);
+}
+input[type="checkbox"] {
+  accent-color: var(--dice-salmon);
+}
+select,
+input[type="text"] {
+  color: var(--dice-chalk);
+  font-family: var(--dice-display);
+}
+option {
+  color: var(--dice-maroon-ink);
+}
+
+summary::-webkit-details-marker {
+  display: none;
+}
+
+:focus-visible {
+  outline: 3px solid var(--dice-salmon);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

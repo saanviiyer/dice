@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
+  <!-- The dice mark: brick ground, chalk die, dark pips. -->
+  <rect width="120" height="120" rx="26" fill="#bb3a20"/>
+  <g transform="translate(10,8)">
+    <path d="M50 8 L90 31 L50 54 L10 31 Z" fill="#f5f2ed"/>
+    <path d="M10 31 L50 54 L50 97 L10 74 Z" fill="#ded8d1"/>
+    <path d="M90 31 L50 54 L50 97 L90 74 Z" fill="#c2b9b0"/>
+    <circle cx="50" cy="31" r="4.4" fill="#260c06"/>
+    <circle cx="22" cy="50.8" r="4" fill="#260c06"/>
+    <circle cx="38" cy="77.2" r="4" fill="#260c06"/>
+    <circle cx="80" cy="47.5" r="4" fill="#260c06"/>
+    <circle cx="70" cy="64" r="4" fill="#260c06"/>
+    <circle cx="60" cy="80.5" r="4" fill="#260c06"/>
+  </g>
+</svg>
