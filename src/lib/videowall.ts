@@ -104,12 +104,34 @@ export interface VideoTake {
   durationMs: number;
   /** Silenced but still on the wall: the picture without its sound. */
   muted?: boolean;
+  /** This take's own level in the mix, 0..1. Absent means unity. */
+  level?: number;
   /** Brought in from a file rather than recorded here. */
   imported?: boolean;
   /** This browser could not decode it. Shown as such rather than as black. */
   broken?: boolean;
   /** Left out of the wall without being deleted. */
   hidden?: boolean;
+}
+
+/**
+ * How loud each take should be when `count` of them play together.
+ *
+ * Equal power rather than one-over-n: separate takes of a voice are not the
+ * same signal, so they sum closer to the square root of their number than to
+ * their number. One take plays at unity, four at half - and a take's own level
+ * rides on top of that, so balancing the mix does not undo the staging.
+ */
+export function takeLevel(
+  take: { muted?: boolean; level?: number },
+  count: number,
+  guide = 1
+): number {
+  if (take.muted) return 0;
+  const own = typeof take.level === "number" && Number.isFinite(take.level)
+    ? Math.max(0, Math.min(1, take.level))
+    : 1;
+  return (own * Math.max(0, Math.min(1, guide))) / Math.sqrt(Math.max(1, count));
 }
 
 /** The takes actually on the wall. */

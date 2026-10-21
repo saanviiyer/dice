@@ -10,6 +10,7 @@ import {
   type VideoTake,
   importedLabel,
   looksPlayable,
+  takeLevel,
 } from "./videowall";
 
 const take = (over: Partial<VideoTake> = {}): VideoTake => ({
@@ -199,5 +200,38 @@ describe("bringing a clip in from a file", () => {
   it("always has something to call a clip", () => {
     expect(importedLabel("")).toBe("clip");
     expect(importedLabel(".mp4")).toBe("clip");
+  });
+});
+
+describe("balancing the takes", () => {
+  it("drops each take as the stack grows, so four do not clip one", () => {
+    // Four full-scale vocal takes summed raw is what "the harmonies sound
+    // distorted" was: equal-power staging is the fix.
+    expect(takeLevel({}, 1)).toBe(1);
+    expect(takeLevel({}, 4)).toBeCloseTo(0.5, 5);
+    expect(takeLevel({}, 9)).toBeCloseTo(1 / 3, 5);
+  });
+
+  it("lets a take's own level ride on top of the staging", () => {
+    expect(takeLevel({ level: 0.5 }, 4)).toBeCloseTo(0.25, 5);
+    expect(takeLevel({ level: 1 }, 4)).toBeCloseTo(0.5, 5);
+  });
+
+  it("silences a muted take whatever its fader says", () => {
+    expect(takeLevel({ muted: true, level: 1 }, 1)).toBe(0);
+  });
+
+  it("quietens the whole wall when it is only a guide", () => {
+    const loud = takeLevel({}, 2, 1);
+    const guide = takeLevel({}, 2, 0.55);
+    expect(guide).toBeLessThan(loud);
+    expect(guide).toBeCloseTo(loud * 0.55, 5);
+  });
+
+  it("treats a missing or nonsense level as unity, not as silence", () => {
+    expect(takeLevel({}, 1)).toBe(1);
+    expect(takeLevel({ level: Number.NaN }, 1)).toBe(1);
+    expect(takeLevel({ level: -2 }, 1)).toBe(0);
+    expect(takeLevel({ level: 5 }, 1)).toBe(1);
   });
 });

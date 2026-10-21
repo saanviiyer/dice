@@ -707,13 +707,33 @@ export class Synth {
     if (!this.ctx || !this.recordBus) return null;
     if (!this.recorderDest) {
       this.recorderDest = this.ctx.createMediaStreamDestination();
-      this.recordBus.connect(this.recorderDest);
+
+      // A safety limiter in front of the file.
+      //
+      // Everything meets here: the synth, the drums, the loops, the harmonizer
+      // - which can be four pitch-shifted copies of a voice at once - and then
+      // the raw microphone on top of all of it, at unity. Summed straight into
+      // a MediaStreamDestination that is exactly what a recording of someone
+      // singing harmonies over a beat sounds like: clipped, and clipped in the
+      // file, where no amount of turning it down afterwards helps.
+      //
+      // It sits just under zero and only works on peaks that would otherwise
+      // have been flattened anyway, so a take still sounds like what was heard
+      // while it was being made.
+      const limiter = this.ctx.createDynamicsCompressor();
+      limiter.threshold.value = -1.5;
+      limiter.knee.value = 0;
+      limiter.ratio.value = 20;
+      limiter.attack.value = 0.003;
+      limiter.release.value = 0.25;
+      limiter.connect(this.recorderDest);
+      this.recordBus.connect(limiter);
       // Also fold the raw microphone into the recording (but NOT the speakers):
-      // micHub -> recorderDest only. This way a capture always contains the
-      // user's voice even when the harmonizer is off, while live monitoring stays
-      // off so there is no latency echo or feedback. The mic source swaps under
+      // micHub -> recorder only. This way a capture always contains the user's
+      // voice even when the harmonizer is off, while live monitoring stays off
+      // so there is no latency echo or feedback. The mic source swaps under
       // micHub over time; this hub-level edge persists.
-      if (this.micHub) this.micHub.connect(this.recorderDest);
+      if (this.micHub) this.micHub.connect(limiter);
     }
     return this.recorderDest.stream;
   }

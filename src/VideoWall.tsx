@@ -34,7 +34,7 @@ import {
   type VideoTake,
 } from "./lib/videowall";
 import { lyricAt, parseLyrics, wrapLyric } from "./lib/lyrics";
-import { looksPlayable } from "./lib/videowall";
+import { looksPlayable, takeLevel } from "./lib/videowall";
 
 export interface VideoWallProps {
   takes: VideoTake[];
@@ -73,6 +73,16 @@ const COUNT_IN_BEATS = 4;
 
 /** Roughly how many characters of caption fit across the picture. */
 const CAPTION_CHARS = 40;
+
+/**
+ * How loud the wall runs while you are recording over it.
+ *
+ * The guide only has to be loud enough to sing with. Running it at full level
+ * puts it in the room loudly enough for the microphone to hear, and a take with
+ * the earlier takes bleeding into it plays back against the originals a few
+ * milliseconds out - which is not a stack, it is a flanger.
+ */
+const GUIDE_LEVEL = 0.55;
 
 function pickMime(list: string[]): string {
   for (const m of list) {
@@ -164,6 +174,8 @@ export default function VideoWall({
   const [countIn, setCountIn] = useState(true);
   const [singAlong, setSingAlong] = useState(true);
   const [positionMs, setPositionMs] = useState(0);
+  /** Whether what is playing is the guide for a take being recorded. */
+  const [guiding, setGuiding] = useState(false);
   // The take waiting on a second click before it goes. A take cannot be got
   // back - the blob is dropped and its object URL revoked - so deleting one is
   // two clicks rather than a modal nobody reads.
@@ -174,6 +186,13 @@ export default function VideoWall({
   // createMediaElementSource may only be called once per element, so the node
   // is cached and reused for every subsequent export.
   const sourceRefs = useRef(new Map<number, MediaElementAudioSourceNode>());
+  /** One fader per take, so the stack can be gain-staged as it grows. */
+  const takeGains = useRef(new Map<number, GainNode>());
+  const busRef = useRef<{
+    ctx: AudioContext;
+    input: GainNode;
+    limiter: DynamicsCompressorNode;
+  } | null>(null);
 
   const shown = useMemo(() => visibleTakes(takes), [takes]);
   const hiddenTakes = useMemo(() => takes.filter((t) => t.hidden), [takes]);
@@ -213,28 +232,120 @@ export default function VideoWall({
     [shown]
   );
 
+  /**
+   * The wall's own bus: every take's audio, gain-staged, through a limiter.
+   *
+   * Takes used to play straight out of their video elements, which means four
+   * vocal takes were four full-scale signals summed at the output with nothing
+   * in between. That clips, and clipping is what "the harmonies sound
+   * distorted" actually is. The looper has had a limiter on its loop bus since
+   * loops could stack, for exactly this reason; the wall never got one.
+   */
+  const ensureBus = useCallback(() => {
+    const ctx = getContext();
+    if (!ctx) return null;
+    if (busRef.current && busRef.current.ctx === ctx) return busRef.current;
+    const input = ctx.createGain();
+    const limiter = ctx.createDynamicsCompressor();
+    // A safety limiter, not a sound: it should only catch the peaks the gain
+    // staging cannot predict, which is why it sits just under zero.
+    limiter.threshold.value = -3;
+    limiter.knee.value = 0;
+    limiter.ratio.value = 20;
+    limiter.attack.value = 0.003;
+    limiter.release.value = 0.25;
+    input.connect(limiter);
+    limiter.connect(ctx.destination);
+    const made = { ctx, input, limiter };
+    busRef.current = made;
+    return made;
+  }, [getContext]);
+
+  /** Put one take on the bus, once, and hand back its fader. */
+  const routeTake = useCallback(
+    (bus: { ctx: AudioContext; input: GainNode }, id: number, el: HTMLVideoElement) => {
+      const existing = takeGains.current.get(id);
+      if (existing) return existing;
+      let src = sourceRefs.current.get(id);
+      if (!src) {
+        src = bus.ctx.createMediaElementSource(el);
+        sourceRefs.current.set(id, src);
+      }
+      const gain = bus.ctx.createGain();
+      src.connect(gain);
+      gain.connect(bus.input);
+      takeGains.current.set(id, gain);
+      return gain;
+    },
+    []
+  );
+
+  /**
+   * How loud each take should be, given how many are playing.
+   *
+   * Equal power rather than one-over-n: separate takes of a voice are not the
+   * same signal, so they sum closer to the square root of their number than to
+   * their number. One take plays at unity, four at half, and the limiter is
+   * left with only the correlated peaks to catch.
+   */
+  const stageLevels = useCallback(
+    (guide: boolean) => {
+      const audible = shown.filter((t) => !t.muted).length || 1;
+      const bus = busRef.current;
+      for (const t of shown) {
+        const v = videoRefs.current.get(t.id);
+        if (!v) continue;
+        const want = takeLevel(t, audible, guide ? GUIDE_LEVEL : 1);
+        const gain = takeGains.current.get(t.id);
+        if (bus && gain) {
+          gain.gain.setTargetAtTime(want, bus.ctx.currentTime, 0.02);
+          v.volume = 1; // the level lives on the bus now
+        } else {
+          // No audio graph available: stage on the element instead, which is
+          // worse than a limiter and far better than nothing.
+          v.volume = want;
+        }
+      }
+    },
+    [shown]
+  );
+
   const stopAll = useCallback(() => {
     each((v) => {
       v.pause();
       v.currentTime = 0;
     });
     setPlaying(false);
+    setGuiding(false);
     setPositionMs(0);
   }, [each]);
 
-  const playAll = useCallback(() => {
-    setError("");
-    each((v, take) => {
-      v.currentTime = 0;
-      // A muted take keeps its picture and loses its sound, which is how you
-      // produce over an imported clip: the video stays, the audio is yours.
-      v.muted = !!take.muted;
-      void v.play().catch(() => {
-        /* a take that will not play is reported by the wall, not thrown */
+  const playAll = useCallback(
+    (opts: { guide?: boolean } = {}) => {
+      setError("");
+      const bus = ensureBus();
+      // The click that started this is a user gesture, so a suspended context
+      // will resume. If it does not, the takes are left playing themselves:
+      // routing them into a context that never starts would be silence.
+      if (bus && bus.ctx.state === "suspended") void bus.ctx.resume();
+      const live = bus && bus.ctx.state === "running" ? bus : null;
+
+      each((v, take) => {
+        v.currentTime = 0;
+        // A muted take keeps its picture and loses its sound, which is how you
+        // produce over an imported clip: the video stays, the audio is yours.
+        v.muted = !!take.muted;
+        if (live) routeTake(live, take.id, v);
+        void v.play().catch(() => {
+          /* a take that will not play is reported by the wall, not thrown */
+        });
       });
-    });
-    setPlaying(true);
-  }, [each]);
+      setGuiding(opts.guide === true);
+      stageLevels(opts.guide === true);
+      setPlaying(true);
+    },
+    [each, ensureBus, routeTake, stageLevels]
+  );
 
   // Show the live camera in the empty cell. Attached in an effect rather than
   // during render because the stream arrives when the camera does, which is
@@ -250,6 +361,12 @@ export default function VideoWall({
       });
     }
   }, [liveCell, getCameraStream]);
+
+  // A fader moved mid-play has to be heard while it is being moved, which is
+  // the only way to balance a mix.
+  useEffect(() => {
+    if (playing) stageLevels(guiding);
+  }, [playing, guiding, stageLevels]);
 
   // Playhead, for the caption during playback.
   useEffect(() => {
@@ -284,6 +401,8 @@ export default function VideoWall({
       if (gone) URL.revokeObjectURL(gone.url);
       videoRefs.current.delete(id);
       sourceRefs.current.delete(id);
+      takeGains.current.get(id)?.disconnect();
+      takeGains.current.delete(id);
       setConfirming(null);
       onChange(takes.filter((t) => t.id !== id));
     },
@@ -303,6 +422,12 @@ export default function VideoWall({
     const timer = window.setTimeout(() => setConfirming(null), 4000);
     return () => window.clearTimeout(timer);
   }, [confirming]);
+
+  const setLevel = useCallback(
+    (id: number, level: number) =>
+      onChange(takes.map((t) => (t.id === id ? { ...t, level } : t))),
+    [takes, onChange]
+  );
 
   const toggleMuted = useCallback(
     (id: number) => onChange(takes.map((t) => (t.id === id ? { ...t, muted: !t.muted } : t))),
@@ -359,7 +484,8 @@ export default function VideoWall({
         setCountingIn(false);
       }
       await onRecord();
-      if (singAlong && shown.length > 0) playAll();
+      // Played as a guide: quieter, so the microphone hears you and not it.
+      if (singAlong && shown.length > 0) playAll({ guide: true });
     } catch (err) {
       setCountingIn(false);
       setError(err instanceof Error ? err.message : "The take could not be started.");
@@ -406,23 +532,21 @@ export default function VideoWall({
     try {
       if (ctx.state === "suspended") await ctx.resume();
 
+      const bus = ensureBus();
+      if (!bus) {
+        setError("Turn on sound first so the takes can be mixed.");
+        setExporting(false);
+        return;
+      }
       for (const t of shown) {
         const v = videoRefs.current.get(t.id);
-        if (!v) continue;
-        let src = sourceRefs.current.get(t.id);
-        if (!src) {
-          src = ctx.createMediaElementSource(v);
-          sourceRefs.current.set(t.id, src);
-          // Routing an element through Web Audio takes over its output, so it
-          // has to be connected to the speakers too or the wall goes silent.
-          src.connect(ctx.destination);
-        }
-        // Muted takes are left out of the mix as well as off the speakers.
-        // Browsers do not agree about whether a muted element silences its own
-        // source node, and a clip you muted turning up in the bounce is the
-        // kind of surprise you only find after exporting.
-        if (!t.muted) src.connect(dest);
+        if (v) routeTake(bus, t.id, v);
       }
+      // The bounce is taken from the same bus the room hears, after the gain
+      // staging and the limiter, so the file sounds like what you just played
+      // rather than like four takes summed raw. A muted take sits at zero on
+      // its own fader, so it is out of the mix as well as out of the room.
+      bus.limiter.connect(dest);
 
       const videoStream = canvas.captureStream(EXPORT_FPS);
       const mixed = new MediaStream([
@@ -480,19 +604,17 @@ export default function VideoWall({
       rec.stop();
       await finished;
       stopAll();
-      for (const src of sourceRefs.current.values()) {
-        try {
-          src.disconnect(dest);
-        } catch {
-          /* already gone */
-        }
+      try {
+        busRef.current?.limiter.disconnect(dest);
+      } catch {
+        /* already gone */
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "The wall could not be exported.");
     } finally {
       setExporting(false);
     }
-  }, [getContext, shown, durationMs, cues, playAll, stopAll]);
+  }, [getContext, shown, durationMs, cues, playAll, stopAll, ensureBus, routeTake]);
 
   const busy = exporting || countingIn;
   const message = error || recordError || "";
@@ -588,7 +710,7 @@ export default function VideoWall({
         <div className="ml-auto flex items-center gap-2">
           <button
             type="button"
-            onClick={playing ? stopAll : playAll}
+            onClick={() => (playing ? stopAll() : playAll())}
             disabled={shown.length === 0 || busy || recording}
             className="rounded-lg border border-salmonDim/45 px-3 py-1.5 text-sm font-semibold text-chalk transition hover:bg-salmon/10 disabled:opacity-45"
           >
@@ -771,6 +893,55 @@ export default function VideoWall({
             </span>
           ))}
         </div>
+      )}
+
+      {shown.length > 1 && (
+        <details className="mt-3 border-t border-salmonDim/20 pt-2">
+          <summary className="cursor-pointer list-none text-xs font-semibold uppercase tracking-wide text-bone/60">
+            mix
+            <span className="ml-2 font-normal text-bone/40">
+              {shown.length} takes playing together
+            </span>
+          </summary>
+          <div className="mt-2 flex flex-col gap-1.5">
+            {shown.map((t) => {
+              const level = Math.round((t.level ?? 1) * 100);
+              return (
+                <div key={t.id} className="flex items-center gap-2 text-[11px]">
+                  <span className="w-24 shrink-0 truncate text-bone/70">{t.label}</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={t.level ?? 1}
+                    disabled={t.muted}
+                    aria-label={`Level of ${t.label}`}
+                    onChange={(e) => setLevel(t.id, Number(e.target.value))}
+                    className="flex-1 accent-salmon disabled:opacity-40"
+                  />
+                  <span className="w-9 shrink-0 text-right tabular-nums text-bone/45">
+                    {t.muted ? "muted" : `${level}%`}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => toggleMuted(t.id)}
+                    className="rounded px-1.5 py-0.5 text-salmon transition hover:bg-salmon/15"
+                  >
+                    {t.muted ? "unmute" : "mute"}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          <p className="mt-2 text-[11px] leading-relaxed text-bone/45">
+            These levels are the mix: what you hear on play all, what you hear
+            while recording over it, and what lands in the bounce. They sit on
+            top of the staging that keeps a stack of takes from clipping, so
+            turning one up balances it against the others rather than pushing
+            the whole wall into the red.
+          </p>
+        </details>
       )}
 
       <details className="mt-3 border-t border-salmonDim/20 pt-2">
