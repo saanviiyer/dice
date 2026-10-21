@@ -1608,12 +1608,16 @@ export default function SimpleMode() {
   return (
     <div className="min-h-full">
       {/* Three columns once there is room for them.
-          The controls used to be one tall sidebar, which left sound design,
-          the arpeggiator and the harmonizer stranded below the fold while the
-          right-hand side of a wide screen sat empty. The second column is what
-          you are playing; the third is what it sounds like. Below xl they fall
-          back to one sidebar, in that order, and below lg to a single column. */}
-      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_340px] xl:grid-cols-[minmax(0,1fr)_minmax(300px,340px)_minmax(300px,340px)]">
+          The controls used to be one tall sidebar, which left sound design and
+          the harmonizer stranded below the fold while the right-hand side of a
+          wide screen sat empty. The second column holds what you are playing.
+          The third holds what it sounds like. Below 2xl they fall back to one
+          sidebar in that order, and below lg to a single column.
+
+          The split waits for 2xl because a third column at 1280 can only take
+          its width from the camera, and the camera is the one thing on this
+          page that should not get smaller. */}
+      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_340px] 2xl:grid-cols-[minmax(0,1fr)_340px_340px]">
         {/* Stage */}
         <div className="relative min-w-0">
           {/* The picture doubles as the strum surface. It is the biggest
@@ -2237,7 +2241,7 @@ export default function SimpleMode() {
         </aside>
 
         {/* What it sounds like: the voice, the parts that play it, the looper. */}
-        <aside className="flex min-w-0 flex-col gap-4 lg:col-start-2 xl:col-start-3 xl:row-start-1">
+        <aside className="flex min-w-0 flex-col gap-4 lg:col-start-2 2xl:col-start-3 2xl:row-start-1">
           {/* Sound design */}
           <section className="rounded-2xl border border-magenta/30 bg-purple/15 p-4">
             <details open>

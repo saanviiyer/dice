@@ -95,9 +95,9 @@ export default function Landing() {
 
             <div className="order-1 lg:order-2">
               <h1 className="dice-display text-5xl text-chalk sm:text-6xl lg:text-7xl">
-                a studio you play
+                produce music
                 <br />
-                with your <Em>hands</Em>
+                like a <Em>pro</Em>
               </h1>
               <p className="mt-5 max-w-md text-base leading-relaxed text-chalk/85">
                 {BRAND.blurb} Your voice stays yours: {BRAND.name} produces the
@@ -210,8 +210,8 @@ export default function Landing() {
                 <Wordmark className="text-2xl text-chalk" />
               </div>
               <p className="max-w-xs text-sm font-semibold leading-snug text-chalk">
-                synthesised instruments, drum kits and vocal effects. No
-                samples, no account, offline.
+                synthesised instruments, drum kits, vocal effects. No samples
+                and no account, offline.
               </p>
             </div>
           </div>
@@ -245,9 +245,9 @@ export default function Landing() {
               </li>
               <li>
                 <span className="text-chalk">Bounded.</span> It can move faders,
-                pans, tone and reverb sends, and - if you are running the engine
-                - ask it for a backing part. It cannot delete a take or clear
-                your project.
+                pans, tone and reverb sends, and (when you are running the
+                engine) ask it for a backing part. It cannot delete a take or
+                clear your project.
               </li>
             </ul>
           </div>
@@ -318,12 +318,12 @@ export default function Landing() {
               {[
                 ["multitrack mixer", "Volume, pan, mute, solo, rename, duplicate, download and delete on every track."],
                 ["timeline editing", "Coloured regions, drag to move, trim, and snapping off, to beats or to bars."],
-                ["rhythm section", "A six-voice drum grid, a key-aware bass piano roll, and a bar-by-bar arrangement."],
+                ["rhythm section", "A six-voice drum grid and a key-aware bass piano roll, arranged bar by bar."],
                 ["vocal stacks", "Doubles, triples, four-part harmony and six-take choirs, recorded hands-free."],
                 ["tone and room", "A tone control per track, and a shared room the takes can sit in together."],
                 ["undo and autosave", "Forty steps of history, and the project restores itself when you come back."],
                 ["export", "Bounce the whole mix to a stereo WAV, as you hear it."],
-                ["the engine", "A separate local service can render beats, pads and basses. You run it yourself; everything else works without it."],
+                ["the engine", "A separate local service renders backing parts. You run it yourself. Everything else works without it."],
                 ["your files, your machine", "Projects live in your browser. The camera feed never leaves the device."],
               ].map(([title, body]) => (
                 <div key={title} className="border-t border-salmonDim/20 pt-4">

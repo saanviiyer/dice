@@ -18,11 +18,18 @@ const MODES: Array<[TopMode, string, string]> = [
   ["producer", "produce", "the instrument into a full studio"],
 ];
 
+/**
+ * The page is six columns wide until a screen is wide enough for a third
+ * column of controls, and wider from there. The extra width is what keeps the
+ * camera the size it was. A third column drawn inside the old width would have
+ * to take that width from the picture, which is the one thing here that should
+ * not get smaller.
+ */
 export default function Studio() {
   const [mode, setMode] = useState<TopMode>("simple");
 
   return (
-    <div className="mx-auto min-h-full max-w-6xl px-4 py-5">
+    <div className="mx-auto min-h-full max-w-6xl px-4 py-5 2xl:max-w-[1760px]">
       <header className="mb-6">
         <div className="flex flex-wrap items-center gap-3">
           <a href={hrefFor("home")} className="flex shrink-0 items-center gap-2.5">
@@ -57,7 +64,7 @@ export default function Studio() {
         <p className="mt-2 text-sm text-bone/60">
           {mode === "simple"
             ? "Play chords with your hands. Camera and microphone stay on your machine."
-            : "Record loops into the mixer, stack your voice, and hand it to the producer agent."}
+            : "Record loops into the mixer and stack your voice. The producer agent mixes what you made."}
         </p>
       </header>
 

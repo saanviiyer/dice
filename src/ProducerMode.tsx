@@ -1166,11 +1166,13 @@ export default function ProducerMode() {
         version={shelfVersion}
       />
 
-    {/* Three columns once there is room, on the same split as play mode: the
-        second column is the things you play into the session, the third is the
-        instrument and the engine behind them. Below xl they fall back to one
-        sidebar in that order. */}
-    <div className="mt-4 grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_360px] xl:grid-cols-[minmax(0,1fr)_minmax(320px,360px)_minmax(300px,340px)]">
+    {/* Three columns once there is room, on the same split as play mode. The
+        second column holds the things you play into the session. The third
+        holds the instrument behind them. Below 2xl they fall back to one
+        sidebar in that order. The split waits for 2xl so that the third column
+        takes its width from a wide screen's margins, leaving the timeline the
+        width it had. */}
+    <div className="mt-4 grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_360px] 2xl:grid-cols-[minmax(0,1fr)_360px_340px]">
       {/* Stage + mixer */}
       <div className="relative min-w-0">
         <div
@@ -2077,7 +2079,7 @@ export default function ProducerMode() {
       </aside>
 
       {/* The instrument itself: what the hands and the pads are playing. */}
-      <aside className="flex min-w-0 flex-col gap-4 lg:col-start-2 xl:col-start-3 xl:row-start-1">
+      <aside className="flex min-w-0 flex-col gap-4 lg:col-start-2 2xl:col-start-3 2xl:row-start-1">
         {/* Instrument controls */}
         <section className="rounded-2xl border border-magenta/30 bg-purple/15 p-4">
           <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-white/70">
