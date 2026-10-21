@@ -17,12 +17,12 @@ export const BRAND = {
   name: "dice",
   /** The wordmark always carries the period. */
   wordmark: "dice.",
-  tagline: "produce music like a pro",
+  tagline: "a hand-gesture instrument and a vocal studio",
   /** The positioning line. */
-  positioning: "building a better garageband.",
+  positioning: "a garage band in a browser tab.",
   /** One sentence, for the meta description and the desktop about box. */
   blurb:
-    "dice turns your voice and your hands into a finished record: perform, stack harmonies, and let the producer agent mix it.",
+    "dice is a hand-gesture instrument and a vocal studio. You sing the takes; the producer agent mixes them and shows its working.",
 } as const;
 
 /**

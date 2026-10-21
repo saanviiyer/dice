@@ -34,5 +34,7 @@ export function hrefFor(route: Route): string {
 
 /** The document title for a route. */
 export function titleFor(route: Route): string {
-  return route === "studio" ? "dice studio" : "dice — produce music like a pro";
+  return route === "studio"
+    ? "dice studio"
+    : "dice — a hand-gesture instrument and a vocal studio";
 }

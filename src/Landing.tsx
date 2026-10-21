@@ -95,14 +95,13 @@ export default function Landing() {
 
             <div className="order-1 lg:order-2">
               <h1 className="dice-display text-5xl text-chalk sm:text-6xl lg:text-7xl">
-                produce music
+                a studio you play
                 <br />
-                like a <Em>pro</Em>
+                with your <Em>hands</Em>
               </h1>
               <p className="mt-5 max-w-md text-base leading-relaxed text-chalk/85">
-                {BRAND.blurb} No band, no booth, no engineer. Your voice stays
-                yours: {BRAND.name} produces the takes you sing, it does not
-                generate a song for you.
+                {BRAND.blurb} Your voice stays yours: {BRAND.name} produces the
+                takes you sing, it does not generate a song for you.
               </p>
               <div className="mt-7 flex flex-wrap items-center gap-3">
                 <a
@@ -134,7 +133,7 @@ export default function Landing() {
             <h2 className="dice-display max-w-xl text-4xl text-chalk sm:text-5xl">
               music production
               <br />
-              easy, intuitive, <Em>smart</Em>
+              in a browser <Em>tab</Em>
             </h2>
             <div className="flex items-center gap-2.5">
               <DiceMark size={34} />
@@ -173,7 +172,7 @@ export default function Landing() {
           </Card>
           <Card
             title="let the agent mix it"
-            body="Say what you want it to sound like. The producer agent measures every track, works out what is actually wrong, and fixes one thing at a time, telling you which number made it do that."
+            body="Say what you want it to sound like. The producer agent measures every track, turns that into numbered problems, and fixes one at a time, telling you which number made it do that."
           >
             <DiceMark size={38} />
           </Card>
@@ -211,11 +210,8 @@ export default function Landing() {
                 <Wordmark className="text-2xl text-chalk" />
               </div>
               <p className="max-w-xs text-sm font-semibold leading-snug text-chalk">
-                a built-in library of instruments, drum kits and vocal effects,
-                free and offline
-              </p>
-              <p className="dice-emph max-w-xs text-sm text-chalk/80">
-                and that's just the prelude.
+                synthesised instruments, drum kits and vocal effects. No
+                samples, no account, offline.
               </p>
             </div>
           </div>
@@ -228,19 +224,18 @@ export default function Landing() {
           <div>
             <Eyebrow>the producer agent</Eyebrow>
             <h2 className="dice-display text-4xl text-chalk sm:text-5xl">
-              it hears the mix, then <Em>earns every move</Em>
+              it measures, moves, then <Em>checks itself</Em>
             </h2>
             <p className="mt-5 text-base leading-relaxed text-bone/75">
-              Most "AI mixing" is a preset with a chat box in front of it. The
-              agent in {BRAND.name} is a loop. It measures loudness, spectrum,
-              transients and the stereo picture across every track, turns that
-              into a list of numbered problems, makes exactly one move, then
-              measures again.
+              The agent is a loop. It measures loudness, spectrum, transients
+              and the stereo picture across every track, turns that into a list
+              of numbered problems, makes exactly one move, then measures again.
             </p>
             <p className="mt-4 text-base leading-relaxed text-bone/75">
-              If the move did not make the mix measurably better, it puts it
-              back. You only ever hear changes that helped, and the transcript
-              tells you by how much. The whole run undoes with one button.
+              If the move did not improve its score, it puts it back. What you
+              keep are the moves that measured better, and the transcript says
+              by how much. Whether that is better to your ears is still your
+              call, and the whole run undoes with one button.
             </p>
             <ul className="mt-6 flex flex-col gap-3 text-sm text-bone/65">
               <li>
@@ -250,8 +245,9 @@ export default function Landing() {
               </li>
               <li>
                 <span className="text-chalk">Bounded.</span> It can move faders,
-                pans, tone and reverb sends, and ask the engine for a backing
-                part. It cannot delete a take or clear your project.
+                pans, tone and reverb sends, and - if you are running the engine
+                - ask it for a backing part. It cannot delete a take or clear
+                your project.
               </li>
             </ul>
           </div>
@@ -314,9 +310,9 @@ export default function Landing() {
               <Wordmark className="text-2xl text-chalk" />
             </div>
             <h2 className="dice-display mt-10 max-w-md text-4xl text-chalk sm:text-5xl">
-              bring your music
+              what is in
               <br />
-              <Em>to life</Em>
+              the <Em>studio</Em>
             </h2>
             <div className="mt-8 grid max-w-3xl gap-x-8 gap-y-6 sm:grid-cols-2 lg:grid-cols-3">
               {[
@@ -324,10 +320,10 @@ export default function Landing() {
                 ["timeline editing", "Coloured regions, drag to move, trim, and snapping off, to beats or to bars."],
                 ["rhythm section", "A six-voice drum grid, a key-aware bass piano roll, and a bar-by-bar arrangement."],
                 ["vocal stacks", "Doubles, triples, four-part harmony and six-take choirs, recorded hands-free."],
-                ["tone and room", "A tone control per track and a shared room that makes a stack read as one voice."],
+                ["tone and room", "A tone control per track, and a shared room the takes can sit in together."],
                 ["undo and autosave", "Forty steps of history, and the project restores itself when you come back."],
-                ["export", "Bounce the whole mix to a stereo WAV, exactly as you hear it."],
-                ["the engine", "An offline audio engine renders beats, pads, basses and arps that fit your take."],
+                ["export", "Bounce the whole mix to a stereo WAV, as you hear it."],
+                ["the engine", "A separate local service can render beats, pads and basses. You run it yourself; everything else works without it."],
                 ["your files, your machine", "Projects live in your browser. The camera feed never leaves the device."],
               ].map(([title, body]) => (
                 <div key={title} className="border-t border-salmonDim/20 pt-4">
