@@ -17,7 +17,7 @@ One build has two front doors. The website serves the marketing page at `/` and 
 - **Progression mode.** Type chords (`Am E F C`) and your fingers pick from that list. You can transpose the progression in place.
 - **Instruments.** Guitars, keys, strings and mallets, and synths. None are samples. Each is a subtractive voice with a short attack transient.
 - **Harmonies for what you sang.** A take can suggest its key and a chord under each stretch. The key comes from Krumhansl-Schmuckler profiles.
-- **The wall.** Stack video takes in a grid, record over them with a count-in, add lyrics as captions, and bounce the grid and the full mix to one video. You can import a video file to produce over. Imported files are not uploaded.
+- **The wall.** Stack video takes in a grid, record over them with a count-in, add lyrics as captions, and bounce the grid and the full mix to one video. You can import a video file to produce over. Imported files are not uploaded. Each take has a level in the mix panel. Takes are gain-staged by how many are playing and pass through a limiter, so a stack does not clip, and the guide runs quieter while you record over it.
 - **Share song.** A link holds the tempo, key, chords, beat, basslines, lyrics and voice. The data sits after the `#`, so it is not sent to a server. Audio is never put in the link.
 - **Projects.** Save, open, rename and delete named projects from a shelf in produce mode.
 
@@ -28,7 +28,7 @@ git clone https://github.com/saanviiyer/dice
 cd dice
 npm install
 npm run dev          # site at /, studio at /#/studio
-npm test             # 564 tests (vitest)
+npm test             # 682 tests (vitest)
 npm run build        # tsc -b and vite build, output in dist/
 ```
 
