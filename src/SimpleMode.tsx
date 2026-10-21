@@ -1607,7 +1607,13 @@ export default function SimpleMode() {
 
   return (
     <div className="min-h-full">
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
+      {/* Three columns once there is room for them.
+          The controls used to be one tall sidebar, which left sound design,
+          the arpeggiator and the harmonizer stranded below the fold while the
+          right-hand side of a wide screen sat empty. The second column is what
+          you are playing; the third is what it sounds like. Below xl they fall
+          back to one sidebar, in that order, and below lg to a single column. */}
+      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_340px] xl:grid-cols-[minmax(0,1fr)_minmax(300px,340px)_minmax(300px,340px)]">
         {/* Stage */}
         <div className="relative min-w-0">
           {/* The picture doubles as the strum surface. It is the biggest
@@ -1880,8 +1886,8 @@ export default function SimpleMode() {
         />
         </div>
 
-        {/* Controls + legend */}
-        <aside className="min-w-0 flex flex-col gap-4">
+        {/* What you are playing: the mode, the key, the wall, the gesture map. */}
+        <aside className="flex min-w-0 flex-col gap-4 lg:col-start-2 lg:row-start-1">
 
 
           {/* Mode switch */}
@@ -2227,6 +2233,11 @@ export default function SimpleMode() {
             </details>
           </section>
 
+          <Legend mode={mode} twoHand={twoHand} />
+        </aside>
+
+        {/* What it sounds like: the voice, the parts that play it, the looper. */}
+        <aside className="flex min-w-0 flex-col gap-4 lg:col-start-2 xl:col-start-3 xl:row-start-1">
           {/* Sound design */}
           <section className="rounded-2xl border border-magenta/30 bg-purple/15 p-4">
             <details open>
@@ -3296,7 +3307,6 @@ export default function SimpleMode() {
             </details>
           </section>
 
-          <Legend mode={mode} twoHand={twoHand} />
         </aside>
       </div>
 
