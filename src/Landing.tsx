@@ -111,12 +111,6 @@ export default function Landing() {
                 >
                   open the studio
                 </a>
-                <a
-                  href="#get"
-                  className="rounded-full border border-chalk/45 px-6 py-3 text-base font-semibold text-chalk transition hover:bg-chalk/10"
-                >
-                  get the desktop app
-                </a>
               </div>
               <p className="mt-4 text-xs text-chalk/60">
                 Runs in the browser. The camera and the microphone never leave
