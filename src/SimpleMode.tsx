@@ -14,6 +14,7 @@ import {
   midiToName,
   keyName,
   parseProgression,
+  voiceParsed,
   progressionAccidental,
   progressionRoot,
   semitonesToRoot,
@@ -75,6 +76,13 @@ import VideoWall from "./VideoWall";
 import { MAX_TAKES, importedLabel, takeLabel, type VideoTake } from "./lib/videowall";
 import { analyzeMelody, type MelodyAnalysis } from "./lib/melody";
 import { progressionInKey, searchProgressions } from "./lib/progressions";
+import {
+  STRUM_PATTERNS,
+  chordIndexAt,
+  strokeAt,
+  strokeSeconds,
+  strokeSweep,
+} from "./lib/strumpattern";
 import {
   SONG_LINK_COMFORTABLE_CHARS,
   songFromUrl,
@@ -242,6 +250,9 @@ export default function SimpleMode() {
   const [shareNote, setShareNote] = useState<string>("");
   /** What was typed into the chord search, if anything. */
   const [chordQuery, setChordQuery] = useState<string>("");
+  /** Play the progression as a strummed guitar, in time with the beat. */
+  const [autoStrum, setAutoStrum] = useState<boolean>(false);
+  const [strumPatternId, setStrumPatternId] = useState<string>(STRUM_PATTERNS[0].id);
   const [songName, setSongName] = useState<string>("");
   const nextTakeId = useRef(1);
   const chunksRef = useRef<Blob[]>([]);
@@ -309,6 +320,8 @@ export default function SimpleMode() {
   // What the hand is fretting right now, for the trackpad to strum. Held in a
   // ref because the pointer handlers run between animation frames.
   const strumChordRef = useRef<number[]>([]);
+  /** The progression the auto-strummer is walking through, voiced. */
+  const autoStrumChordsRef = useRef<number[][]>([]);
   const strumSurfaceRef = useRef<HTMLDivElement | null>(null);
   const strumGestureRef = useRef({ pos: 0.5, time: 0, down: false });
   /**
@@ -402,6 +415,19 @@ export default function SimpleMode() {
    * Written out in the key already chosen, because a progression in the wrong
    * key is one more thing to fix rather than an answer.
    */
+  /**
+   * The progression, voiced, for the auto-strummer.
+   *
+   * Held in a ref because the scheduler runs between renders, and rebuilt from
+   * the same parsed slots the hand plays from, so what is strummed is what the
+   * fingers would have picked.
+   */
+  useEffect(() => {
+    autoStrumChordsRef.current = progressionSlots
+      .map((slot) => (slot.chord ? voiceParsed(slot.chord, octave, 0).notes : []))
+      .filter((notes) => notes.length > 0);
+  }, [progressionSlots, octave]);
+
   const chordMatches = useMemo(
     () =>
       searchProgressions(chordQuery, 5).map(({ progression }) => ({
@@ -429,6 +455,7 @@ export default function SimpleMode() {
     latchOn,
     strumOn,
     strumLevel,
+    bpm: arpBpm,
     progression: progressionSlots.map((s) => s.chord),
   });
   useEffect(() => {
@@ -443,6 +470,7 @@ export default function SimpleMode() {
       latchOn,
       strumOn,
       strumLevel,
+      bpm: arpBpm,
       progression: progressionSlots.map((s) => s.chord),
     };
   }, [
@@ -456,6 +484,7 @@ export default function SimpleMode() {
     latchOn,
     strumOn,
     strumLevel,
+    arpBpm,
     progressionSlots,
   ]);
 
@@ -598,6 +627,61 @@ export default function SimpleMode() {
    * flick it and it snaps, drag it and it arpeggiates - so each segment is
    * spread across the time that movement actually took.
    */
+  /**
+   * The progression, strummed, against the transport.
+   *
+   * The trackpad strum takes its rhythm from your hand, which is the best way
+   * to play a chord and no use when you want to hear what a progression sounds
+   * like. This is the other hand: a written pattern, one chord to the bar,
+   * scheduled on the step the drums are scheduling against so the guitar lands
+   * with the kick instead of near it.
+   */
+  useEffect(() => {
+    const dm = drumsRef.current;
+    if (!dm) return;
+    if (!autoStrum) {
+      dm.setStepListener(null);
+      return;
+    }
+    const pattern =
+      STRUM_PATTERNS.find((p) => p.id === strumPatternId) ?? STRUM_PATTERNS[0];
+
+    dm.setStepListener((step, time) => {
+      const chords = autoStrumChordsRef.current;
+      if (chords.length === 0) return;
+      const stroke = strokeAt(pattern, step);
+      if (!stroke) return;
+      const chord = chords[chordIndexAt(step, chords.length)];
+      if (!chord || chord.length === 0) return;
+
+      const sweep = strokeSweep(stroke.direction);
+      const seconds = strokeSeconds(cfgRef.current.bpm, stroke.direction);
+      const notes = strum({
+        chord,
+        strings: STRUM_STRINGS,
+        from: sweep.from,
+        to: sweep.to,
+        seconds,
+      });
+      const synth = synthRef.current;
+      const level = cfgRef.current.strumLevel * stroke.velocity;
+      const order = stringVoicing(chord, STRUM_STRINGS);
+      for (const n of notes) {
+        const at = time + n.at;
+        const idx = order.indexOf(n.midi);
+        if (idx >= 0) strumStringsRef.current[idx]?.stop(at);
+        const handle = synth.triggerNote(
+          midiToFreq(n.midi),
+          at,
+          STRUM_GATE,
+          n.velocity * level
+        );
+        if (idx >= 0) strumStringsRef.current[idx] = handle;
+      }
+    });
+    return () => dm.setStepListener(null);
+  }, [autoStrum, strumPatternId]);
+
   /** Stop every ringing string, the way a palm across them would. */
   const dampStrings = useCallback((at?: number) => {
     const when = at ?? synthRef.current.getContext()?.currentTime ?? 0;
@@ -1984,6 +2068,56 @@ export default function SimpleMode() {
                       would mean sending your search somewhere.
                     </p>
                   )}
+                </div>
+
+                {/* Hear it played, not just held.
+                    A progression you have to perform before you know whether
+                    you like it is a progression you will not audition. */}
+                <div className="mt-3 rounded-lg border border-purple/30 bg-purple/10 p-2">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={autoStrum}
+                      onChange={(e) => {
+                        setAutoStrum(e.target.checked);
+                        if (e.target.checked) {
+                          // A strummed guitar wants a guitar. Synth voices
+                          // swell where a strum needs to land, so a plain
+                          // synth is swapped for the acoustic the first time.
+                          if (!PRESET_GROUPS[0].names.includes(presetName)) {
+                            setPresetName("Acoustic guitar");
+                            setSound(getPreset("Acoustic guitar"));
+                          }
+                          if (beatState === "stopped") playBeat();
+                        }
+                      }}
+                    />
+                    Strum the progression
+                    <span className="text-xs text-white/55">(with the beat)</span>
+                  </label>
+
+                  {autoStrum && (
+                    <label className="mt-2 flex items-center gap-2 text-xs text-white/70">
+                      pattern
+                      <select
+                        value={strumPatternId}
+                        onChange={(e) => setStrumPatternId(e.target.value)}
+                        className="flex-1 rounded-md border border-purple/50 bg-purple/25 px-1.5 py-1"
+                      >
+                        {STRUM_PATTERNS.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+
+                  <p className="mt-1 text-[11px] leading-relaxed text-white/45">
+                    {autoStrum
+                      ? STRUM_PATTERNS.find((p) => p.id === strumPatternId)?.note
+                      : "Plays the chords above as a strummed guitar, one to the bar, on the beat. Your hands stay free for the melody."}
+                  </p>
                 </div>
 
                 <label className="mb-1 mt-3 block text-sm text-white/70">

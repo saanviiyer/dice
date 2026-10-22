@@ -779,3 +779,54 @@ describe("DrumMachine basslines", () => {
     expect(rec.notes).toHaveLength(0);
   });
 });
+
+describe("listening to the scheduler", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("reports each step before it sounds, with the time it will sound", () => {
+    vi.useFakeTimers();
+    const { ctx, advance } = fakeCtx();
+    const dm = new DrumMachine(ctx, recorder().trig);
+    const heard: { step: number; time: number }[] = [];
+    dm.setStepListener((step, time) => heard.push({ step, time }));
+    dm.setBpm(120); // a sixteenth is 0.125s
+    dm.setPattern(emptyPattern(1));
+    dm.start();
+    for (let i = 0; i < 20; i += 1) {
+      advance(0.05);
+      vi.advanceTimersByTime(25);
+    }
+    dm.stop();
+
+    expect(heard.length).toBeGreaterThan(4);
+    expect(heard[0].step).toBe(0);
+    expect(heard[1].step).toBe(1);
+    // Scheduled ahead of the clock, which is the whole point of hearing it here.
+    expect(heard[1].time - heard[0].time).toBeCloseTo(0.125, 5);
+  });
+
+  it("stops reporting once the listener is taken away", () => {
+    vi.useFakeTimers();
+    const { ctx, advance } = fakeCtx();
+    const dm = new DrumMachine(ctx, recorder().trig);
+    let count = 0;
+    dm.setStepListener(() => (count += 1));
+    dm.setBpm(120);
+    dm.start();
+    for (let i = 0; i < 8; i += 1) {
+      advance(0.05);
+      vi.advanceTimersByTime(25);
+    }
+    const sofar = count;
+    dm.setStepListener(null);
+    for (let i = 0; i < 8; i += 1) {
+      advance(0.05);
+      vi.advanceTimersByTime(25);
+    }
+    dm.stop();
+    expect(sofar).toBeGreaterThan(0);
+    expect(count).toBe(sofar);
+  });
+});

@@ -456,6 +456,15 @@ export class DrumMachine {
     shaker: true,
   };
   private metronome = false;
+  /**
+   * Called as each step is scheduled, with the time it will sound.
+   *
+   * The playhead getter is for drawing: it reports the step being heard, after
+   * the fact. Anything that has to play on the beat needs the step before it
+   * sounds, with the audio-clock time to schedule against, which is what this
+   * hands over.
+   */
+  private stepListener: ((step: number, time: number) => void) | null = null;
 
   private step = 0;
   private nextTime = 0;
@@ -557,6 +566,11 @@ export class DrumMachine {
   setEnables(e: DrumEnables): void {
     this.enables = { ...e };
   }
+  /** Listen to the scheduler. Pass null to stop listening. */
+  setStepListener(fn: ((step: number, time: number) => void) | null): void {
+    this.stepListener = fn;
+  }
+
   setMetronome(on: boolean): void {
     this.metronome = on;
   }
@@ -647,6 +661,9 @@ export class DrumMachine {
         const m = metronomeClick(this.step);
         if (m.click) this.trig.click(t, m.accent);
       }
+      // After the drums for this step, so a listener that plays a chord is
+      // scheduling against the same instant the kick lands on.
+      this.stepListener?.(this.step, t);
       this.scheduled.push({ step: this.step, time: t });
       // Bound the queue in case nothing is drawing a playhead.
       if (this.scheduled.length > 64) this.scheduled.shift();
