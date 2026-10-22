@@ -276,6 +276,44 @@ const P: Record<string, SoundConfig> = {
     },
   },
 
+  Brass: {
+    waveform: "sawtooth",
+    unison: 3,
+    detune: 9,
+    subLevel: 0.1,
+    // Brass arrives rather than lands, and it brightens as it does: the filter
+    // envelope is doing most of the work here, not the oscillators.
+    env: { attack: 0.07, decay: 0.5, sustain: 0.7, release: 0.35 },
+    resonance: 1.1,
+    filterEnvAmount: 0.75,
+    attackNoise: 0.08,
+    lfo: { rate: 5, depth: 0.04, target: "pitch" },
+    fx: {
+      reverb: { on: true, amount: 0.25 },
+      delay: { on: false, time: 0.3, feedback: 0.3, mix: 0.2 },
+      distortion: { on: true, amount: 0.12 },
+      chorus: { on: false, amount: 0.3 },
+    },
+  },
+
+  Clav: {
+    waveform: "square",
+    unison: 1,
+    detune: 0,
+    subLevel: 0,
+    env: { attack: 0.002, decay: 0.3, sustain: 0.05, release: 0.2 },
+    resonance: 2.5,
+    filterEnvAmount: 0.6,
+    attackNoise: 0.22,
+    lfo: { rate: 5, depth: 0, target: "off" },
+    fx: {
+      reverb: { on: true, amount: 0.12 },
+      delay: { on: false, time: 0.25, feedback: 0.3, mix: 0.2 },
+      distortion: { on: false, amount: 0.2 },
+      chorus: { on: false, amount: 0.3 },
+    },
+  },
+
   Marimba: {
     waveform: "sine",
     unison: 2,
@@ -475,8 +513,11 @@ export const PRESET_GROUPS: { label: string; names: string[] }[] = [
       "Muted guitar",
     ],
   },
-  { label: "Keys", names: ["Piano", "E-piano", "Organ", "Rock organ"] },
-  { label: "Strings & mallets", names: ["Strings", "Pizzicato strings", "Harp", "Marimba", "Bell"] },
+  { label: "Keys", names: ["Piano", "E-piano", "Clav", "Organ", "Rock organ"] },
+  {
+    label: "Strings, brass & mallets",
+    names: ["Strings", "Pizzicato strings", "Brass", "Harp", "Marimba", "Bell"],
+  },
   {
     label: "Synths",
     names: ["Basic", "Warm Pad", "Pluck", "Chiptune", "Supersaw Lead", "Sub Bass", "Dream"],

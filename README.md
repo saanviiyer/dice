@@ -14,12 +14,13 @@ One build has two front doors. The website serves the marketing page at `/` and 
 - **Smart tempo.** After a beatbox take, dice offers to move the project tempo if your playing differs by more than 2 BPM. A reading needs at least four distinct hits and at least two seconds.
 - **Pads and typed beats.** Keys `A S D F G H` play the six drum lanes. Hold shift for an accent. You can also type a beat as text (`kick x...x...`). Velocity has three levels: accent (1), normal (0.72) and ghost (0.4).
 - **Strum.** Hold a chord on keys 1 to 7 and sweep the trackpad across the strings. In play mode, your hand frets the chord on camera and the trackpad strums. The strum interaction comes from [laurie.fm](https://laurie.fm/).
-- **Progression mode.** Type chords (`Am E F C`) and your fingers pick from that list. You can transpose the progression in place.
-- **Instruments.** Guitars, keys, strings and mallets, and synths. None are samples. Each is a subtractive voice with a short attack transient.
+- **Progression mode.** Type chords (`Am E F C`) and your fingers pick from that list. You can transpose the progression in place. A search finds a progression by name, feel or roman numerals (`blues`, `sad`, `ii7`) and writes it in your key. It holds common progressions offline. It does not look up the chords to a particular recording, which would mean sending the search to someone's server.
+- **Instruments.** Guitars, keys, strings, brass, mallets, synths. None are samples. Each is a subtractive voice with a short attack transient. The chord voice sits in the Performance panel, so a gestured chord can sound like a piano without going looking for it.
 - **Harmonies for what you sang.** A take can suggest its key and a chord under each stretch. The key comes from Krumhansl-Schmuckler profiles.
 - **The wall.** Stack video takes in a grid, record over them with a count-in, add lyrics as captions, and bounce the grid and the full mix to one video. You can import a video file to produce over. Imported files are not uploaded. Each take has a level in the mix panel. Takes are gain-staged by how many are playing and pass through a limiter, so a stack does not clip, and the guide runs quieter while you record over it.
 - **Share song.** A link holds the tempo, key, chords, beat, basslines, lyrics and voice. The data sits after the `#`, so it is not sent to a server. Audio is never put in the link.
 - **Projects.** Save, open, rename and delete named projects from a shelf in produce mode.
+- **Colour.** The studio ships dark red. The picker in the header changes the hue of the whole palette, not the background alone, since every contrast in the interface comes from one ladder of that red. Each colour keeps the brightness it had, so the ink stays readable; rotating hue while keeping HSL lightness does not hold, because a yellow ground at the maroon's lightness is much brighter and measured 2.5 to 1 against the text where the red measures 7.9. Grounds that would still come out too light are darkened until they clear 4.6 to 1.
 
 ## Run it
 
@@ -28,7 +29,7 @@ git clone https://github.com/saanviiyer/dice
 cd dice
 npm install
 npm run dev          # site at /, studio at /#/studio
-npm test             # 682 tests (vitest)
+npm test             # 708 tests (vitest)
 npm run build        # tsc -b and vite build, output in dist/
 ```
 

@@ -74,6 +74,7 @@ import { secondsPerBar } from "./lib/transport";
 import VideoWall from "./VideoWall";
 import { MAX_TAKES, importedLabel, takeLabel, type VideoTake } from "./lib/videowall";
 import { analyzeMelody, type MelodyAnalysis } from "./lib/melody";
+import { progressionInKey, searchProgressions } from "./lib/progressions";
 import {
   SONG_LINK_COMFORTABLE_CHARS,
   songFromUrl,
@@ -239,6 +240,8 @@ export default function SimpleMode() {
   // The link for this song, once someone asks for one, and what to say about it.
   const [shareLink, setShareLink] = useState<string>("");
   const [shareNote, setShareNote] = useState<string>("");
+  /** What was typed into the chord search, if anything. */
+  const [chordQuery, setChordQuery] = useState<string>("");
   const [songName, setSongName] = useState<string>("");
   const nextTakeId = useRef(1);
   const chunksRef = useRef<Blob[]>([]);
@@ -393,6 +396,21 @@ export default function SimpleMode() {
     () => progressionAccidental(progressionText),
     [progressionText]
   );
+  /**
+   * What the chord search has to offer for what was typed.
+   *
+   * Written out in the key already chosen, because a progression in the wrong
+   * key is one more thing to fix rather than an answer.
+   */
+  const chordMatches = useMemo(
+    () =>
+      searchProgressions(chordQuery, 5).map(({ progression }) => ({
+        progression,
+        text: progressionInKey(progression, tonic),
+      })),
+    [chordQuery, tonic]
+  );
+
   const transpose = useCallback(
     (semitones: number) =>
       setProgressionText((text) => transposeProgression(text, semitones)),
@@ -1922,7 +1940,53 @@ export default function SimpleMode() {
 
             {mode === "progression" && (
               <div className="mt-3">
+                {/* The search, before the field it fills.
+                    What people want here is the chords to a song, which would
+                    be a licensed database and a request carrying what they are
+                    working on. The shape under the song is common property and
+                    is what goes in the box anyway, so that is what this
+                    searches, offline. */}
                 <label className="mb-1 block text-sm text-white/70">
+                  Find a progression
+                </label>
+                <input
+                  type="text"
+                  value={chordQuery}
+                  onChange={(e) => setChordQuery(e.target.value)}
+                  placeholder="blues, jazz, sad, doo-wop, I V vi IV"
+                  aria-label="search progressions"
+                  className="w-full rounded-lg border border-purple/50 bg-purple/25 px-2 py-1.5 text-sm"
+                />
+                <div className="mt-1.5 flex flex-col gap-1">
+                  {chordMatches.map(({ progression, text }) => (
+                    <button
+                      key={progression.id}
+                      type="button"
+                      onClick={() => setProgressionText(text)}
+                      title={progression.note}
+                      className="rounded-lg border border-purple/30 bg-purple/10 px-2 py-1.5 text-left transition hover:bg-magenta/25"
+                    >
+                      <span className="flex flex-wrap items-baseline gap-x-2">
+                        <span className="text-xs font-semibold text-white/85">
+                          {progression.name}
+                        </span>
+                        <span className="font-mono text-xs text-yellow">{text}</span>
+                        <span className="text-[11px] text-white/40">
+                          {progression.roman}
+                        </span>
+                      </span>
+                    </button>
+                  ))}
+                  {chordQuery.trim() !== "" && chordMatches.length === 0 && (
+                    <p className="text-xs text-white/55">
+                      Nothing by that name. dice searches progressions it holds
+                      offline, not the chords to a particular recording, which
+                      would mean sending your search somewhere.
+                    </p>
+                  )}
+                </div>
+
+                <label className="mb-1 mt-3 block text-sm text-white/70">
                   Chord sequence (space/comma separated)
                 </label>
                 <input
@@ -2113,6 +2177,40 @@ export default function SimpleMode() {
                 onChange={(e) => setVolume(Number(e.target.value))}
                 className="w-full"
               />
+            </label>
+
+            {/* The voice the chord speaks in.
+                This has always been in Sound design, under a control labelled
+                "Mode", which is a reasonable place for it and a poor place to
+                find it. Someone holding up three fingers and hearing a synth
+                wants a piano here, next to the chord, not two panels away. */}
+            <label className="mb-3 block text-sm">
+              <span className="mb-1 block text-white/70">Chord voice</span>
+              <select
+                value={presetName}
+                onChange={(e) => {
+                  setPresetName(e.target.value);
+                  setSound(getPreset(e.target.value));
+                }}
+                className="w-full rounded-lg border border-purple/50 bg-purple/25 px-2 py-1.5"
+              >
+                {!PRESET_NAMES.includes(presetName) && (
+                  <option value={presetName}>custom</option>
+                )}
+                {PRESET_GROUPS.map((group) => (
+                  <optgroup key={group.label} label={group.label}>
+                    {group.names.map((n) => (
+                      <option key={n} value={n}>
+                        {n}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+              <span className="mt-1 block text-xs text-white/55">
+                What a held chord sounds like. Sound design edits whichever
+                voice is chosen here.
+              </span>
             </label>
 
             <label className="flex items-center gap-2 text-sm">

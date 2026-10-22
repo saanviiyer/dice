@@ -8,18 +8,25 @@
 // those names across several thousand lines of JSX; re-pointing them re-skins
 // the whole product in one place instead of rewriting every className, and new
 // code uses the dice names directly.
+// Each colour is a CSS variable holding channels, not a hex, so the palette can
+// be changed at runtime by the colour picker in the studio. The channels form
+// is what lets Tailwind keep its alpha modifiers working: `bg-maroon/40`
+// compiles to `rgb(var(--dice-maroon) / 0.4)`. The defaults live in index.css
+// and the maths that produces another palette lives in src/lib/theme.ts.
+const token = (name) => `rgb(var(--dice-${name}) / <alpha-value>)`;
+
 const dice = {
-  brick: "#bb3a20",
-  brickDeep: "#932c17",
-  maroon: "#5e2318",
-  maroonDeep: "#3d1610",
-  maroonInk: "#260c06",
-  salmon: "#efaf9f",
-  salmonDim: "#cf8f7e",
-  bone: "#d5d0cb",
-  boneDim: "#a99f97",
-  chalk: "#f5f2ed",
-  live: "#ff5a3d",
+  brick: token("brick"),
+  brickDeep: token("brick-deep"),
+  maroon: token("maroon"),
+  maroonDeep: token("maroon-deep"),
+  maroonInk: token("maroon-ink"),
+  salmon: token("salmon"),
+  salmonDim: token("salmon-dim"),
+  bone: token("bone"),
+  boneDim: token("bone-dim"),
+  chalk: token("chalk"),
+  live: token("live"),
 };
 
 const display = [

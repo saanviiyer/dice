@@ -6,6 +6,7 @@
 
 import { lazy, Suspense, useState } from "react";
 import { DiceMark, Wordmark } from "./BrandMarks";
+import ThemePicker, { useStoredTheme } from "./ThemePicker";
 import { hrefFor } from "./lib/router";
 
 const SimpleMode = lazy(() => import("./SimpleMode"));
@@ -27,6 +28,7 @@ const MODES: Array<[TopMode, string, string]> = [
  */
 export default function Studio() {
   const [mode, setMode] = useState<TopMode>("simple");
+  const [themeColor, setThemeColor] = useStoredTheme();
 
   return (
     <div className="mx-auto min-h-full max-w-6xl px-4 py-5 2xl:max-w-[1760px]">
@@ -37,8 +39,12 @@ export default function Studio() {
             <Wordmark className="text-2xl text-chalk" />
           </a>
 
+          <div className="ml-auto">
+            <ThemePicker color={themeColor} onColor={setThemeColor} />
+          </div>
+
           <div
-            className="ml-auto inline-flex rounded-full border border-salmonDim/35 bg-maroon/50 p-1"
+            className="inline-flex rounded-full border border-salmonDim/35 bg-maroon/50 p-1"
             role="tablist"
             aria-label="dice mode"
           >
