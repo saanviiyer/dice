@@ -166,6 +166,7 @@ export default function ProducerMode() {
     useState<DrumPatternChoice>("Four-on-floor");
   const [customBeat, setCustomBeat] = useState<DrumPattern>(() => emptyPattern(1));
   const [bassOn, setBassOn] = useState<boolean>(false);
+  const [drumLevel, setDrumLevel] = useState<number>(0.9);
   const [bassLanes, setBassLanes] = useState<BassLane[]>(() =>
     bassStackFromPattern(bassPatternFromPreset("Root pulse", 0, 1))
   );
@@ -390,6 +391,9 @@ export default function ProducerMode() {
   useEffect(() => {
     synthRef.current.setMasterVolume(volume);
   }, [volume]);
+  useEffect(() => {
+    synthRef.current.setDrumLevel(drumLevel);
+  }, [drumLevel]);
 
   useEffect(() => {
     arpRef.current?.setParams({
@@ -1290,6 +1294,8 @@ export default function ProducerMode() {
           onBpm={setArpBpm}
           bassOn={bassOn}
           onBass={setBassOn}
+          drumLevel={drumLevel}
+          onDrumLevel={setDrumLevel}
           metronome={metronome}
           onMetronome={setMetronome}
           customBeat={customBeat}

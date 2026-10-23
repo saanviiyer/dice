@@ -130,6 +130,15 @@ export class Synth {
   private instrumentBus: GainNode | null = null;
   private recordBus: GainNode | null = null;
   private drumBus: GainNode | null = null;
+  /**
+   * The kit, on its own fader.
+   *
+   * The drum bus carries the bass and the metronome as well as the kit, so
+   * turning "the drums" down on it would quietly take the bassline with it and
+   * leave you unable to hear the click you were counting with. The six kit
+   * voices run through here instead.
+   */
+  private kitBus: GainNode | null = null;
   private recorderDest: MediaStreamAudioDestinationNode | null = null;
   private noiseBuf: AudioBuffer | null = null;
   /** Pick/hammer transient level, 0..1. See SoundConfig.attackNoise. */
@@ -313,6 +322,10 @@ export class Synth {
       this.drumBus = ctx.createGain();
       this.drumBus.gain.value = 0.9;
       this.drumBus.connect(this.instrumentBus);
+
+      this.kitBus = ctx.createGain();
+      this.kitBus.gain.value = 1;
+      this.kitBus.connect(this.drumBus);
 
       // Shared mic hub, always rendered through a muted sink so taps/meters read
       // live audio, but silent at the speakers so the mic never feeds back.
@@ -660,6 +673,19 @@ export class Synth {
     };
   }
 
+  /**
+   * How loud the kit is, 0 to 1.
+   *
+   * The bassline and the metronome are not on this fader. A bassline has its
+   * own level per lane, and a click you cannot hear is a click that is not
+   * doing its job, so neither follows the drums down.
+   */
+  setDrumLevel(level: number): void {
+    if (!this.ctx || !this.kitBus) return;
+    const v = Math.max(0, Math.min(1, Number.isFinite(level) ? level : 1));
+    this.kitBus.gain.setTargetAtTime(v, this.ctx.currentTime, 0.02);
+  }
+
   /** Release all active voices with an envelope release tail. */
   releaseAll(): void {
     if (!this.ctx) {
@@ -856,7 +882,7 @@ export class Synth {
     g.gain.exponentialRampToValueAtTime(Synth.vel(0.9, velocity), t + 0.005);
     g.gain.exponentialRampToValueAtTime(0.0001, t + 0.32);
     osc.connect(g);
-    g.connect(this.drumBus);
+    g.connect(this.kitBus ?? this.drumBus);
     osc.start(t);
     osc.stop(t + 0.36);
   }
@@ -876,7 +902,7 @@ export class Synth {
     ng.gain.exponentialRampToValueAtTime(0.0001, t + 0.2);
     src.connect(hp);
     hp.connect(ng);
-    ng.connect(this.drumBus);
+    ng.connect(this.kitBus ?? this.drumBus);
     src.start(t);
     src.stop(t + 0.22);
     // Tonal snap.
@@ -887,7 +913,7 @@ export class Synth {
     og.gain.setValueAtTime(Synth.vel(0.4, velocity), t);
     og.gain.exponentialRampToValueAtTime(0.0001, t + 0.1);
     osc.connect(og);
-    og.connect(this.drumBus);
+    og.connect(this.kitBus ?? this.drumBus);
     osc.start(t);
     osc.stop(t + 0.12);
   }
@@ -911,7 +937,7 @@ export class Synth {
     g.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
     src.connect(bp);
     bp.connect(g);
-    g.connect(this.drumBus);
+    g.connect(this.kitBus ?? this.drumBus);
     src.start(t);
     src.stop(t + 0.18);
   }
@@ -930,7 +956,7 @@ export class Synth {
     g.gain.exponentialRampToValueAtTime(0.0001, t + 0.05);
     src.connect(hp);
     hp.connect(g);
-    g.connect(this.drumBus);
+    g.connect(this.kitBus ?? this.drumBus);
     src.start(t);
     src.stop(t + 0.06);
   }
@@ -947,7 +973,7 @@ export class Synth {
     g.gain.setValueAtTime(Synth.vel(0.65, velocity), t);
     g.gain.exponentialRampToValueAtTime(0.0001, t + 0.28);
     osc.connect(g);
-    g.connect(this.drumBus);
+    g.connect(this.kitBus ?? this.drumBus);
     osc.start(t);
     osc.stop(t + 0.3);
   }
@@ -967,7 +993,7 @@ export class Synth {
     g.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
     src.connect(bp);
     bp.connect(g);
-    g.connect(this.drumBus);
+    g.connect(this.kitBus ?? this.drumBus);
     src.start(t);
     src.stop(t + 0.1);
   }
@@ -1000,6 +1026,7 @@ export class Synth {
       this.instrumentBus = null;
       this.recordBus = null;
       this.drumBus = null;
+      this.kitBus = null;
       this.recorderDest = null;
       this.noiseBuf = null;
       this.micStream = null;

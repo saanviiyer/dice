@@ -307,6 +307,7 @@ export default function SimpleMode() {
     useState<DrumPatternChoice>("Four-on-floor");
   const [customBeat, setCustomBeat] = useState<DrumPattern>(() => emptyPattern(1));
   const [bassOn, setBassOn] = useState<boolean>(false);
+  const [drumLevel, setDrumLevel] = useState<number>(0.9);
   const [bassLanes, setBassLanes] = useState<BassLane[]>(() =>
     bassStackFromPattern(bassPatternFromPreset("Root pulse", 0, 1))
   );
@@ -540,6 +541,9 @@ export default function SimpleMode() {
   useEffect(() => {
     synthRef.current.setMasterVolume(volume);
   }, [volume]);
+  useEffect(() => {
+    synthRef.current.setDrumLevel(drumLevel);
+  }, [drumLevel]);
 
   // Sound-config editing helpers.
   // Sounding drum step for the sequencer playhead; stable so the sequencer's
@@ -1966,6 +1970,8 @@ export default function SimpleMode() {
           onBpm={setArpBpm}
           bassOn={bassOn}
           onBass={setBassOn}
+          drumLevel={drumLevel}
+          onDrumLevel={setDrumLevel}
           metronome={metronomeOn}
           onMetronome={setMetronomeOn}
           customBeat={customBeat}

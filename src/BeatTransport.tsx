@@ -93,6 +93,9 @@ export interface BeatTransportProps {
 
   bassOn: boolean;
   onBass(next: boolean): void;
+  /** How loud the kit is, 0 to 1. The bass and the click are not on it. */
+  drumLevel: number;
+  onDrumLevel(next: number): void;
   metronome: boolean;
   onMetronome(next: boolean): void;
 
@@ -125,6 +128,8 @@ export default function BeatTransport({
   onBpm,
   bassOn,
   onBass,
+  drumLevel,
+  onDrumLevel,
   metronome,
   onMetronome,
   customBeat,
@@ -189,6 +194,24 @@ export default function BeatTransport({
         <label className="flex items-center gap-1.5">
           <span className="text-bone/65">bpm</span>
           <TempoField bpm={bpm} onBpm={onBpm} />
+        </label>
+
+        <label className="flex items-center gap-1.5">
+          <span className="text-bone/65">kit</span>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={drumLevel}
+            aria-label="drum level"
+            title="How loud the drums are. The bassline and the metronome keep their own level."
+            onChange={(e) => onDrumLevel(Number(e.target.value))}
+            className="w-20 accent-salmon"
+          />
+          <span className="w-8 text-xs tabular-nums text-bone/45">
+            {Math.round(drumLevel * 100)}%
+          </span>
         </label>
 
         <label className="flex items-center gap-2 text-bone/80">
