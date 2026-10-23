@@ -69,6 +69,7 @@ import { InputMeter } from "./lib/meter";
 import { InputLevelMeter } from "./InputLevelMeter";
 import BeatTransport from "./BeatTransport";
 import BeatboxChat from "./BeatboxChat";
+import LyricPad from "./LyricPad";
 import Timeline from "./Timeline";
 import type { MixerTrackState } from "./lib/producerMixer";
 import { secondsPerBar } from "./lib/transport";
@@ -122,6 +123,16 @@ const SCROLL_STRING_GAP_SEC = 0.028;
 const SCROLL_MAX_LAG_SEC = 0.4;
 /** How long a string stays lit after it sounds. */
 const STRUM_FLASH_MS = 220;
+
+const LS_LYRICS = "dice.lyrics.v1";
+
+function loadLyrics(): string {
+  try {
+    return localStorage.getItem(LS_LYRICS) ?? "";
+  } catch {
+    return "";
+  }
+}
 
 const LS_SOUND = "dice.sound.v1";
 const LS_PRESET = "dice.preset.v1";
@@ -244,7 +255,9 @@ export default function SimpleMode() {
   const [takes, setTakes] = useState<VideoTake[]>([]);
   // One lyric sheet for the wall, not one per take: the words belong to the
   // song being stacked, and the video that comes out is one video.
-  const [lyrics, setLyrics] = useState<string>("");
+  // Written beside the camera, used by the wall as a prompt and a caption.
+  // One sheet, so there is never a question about which words the video has.
+  const [lyrics, setLyrics] = useState<string>(loadLyrics);
   // The link for this song, once someone asks for one, and what to say about it.
   const [shareLink, setShareLink] = useState<string>("");
   const [shareNote, setShareNote] = useState<string>("");
@@ -487,6 +500,16 @@ export default function SimpleMode() {
     arpBpm,
     progressionSlots,
   ]);
+
+  // A notepad that forgets what was written is not a notepad.
+  useEffect(() => {
+    try {
+      if (lyrics) localStorage.setItem(LS_LYRICS, lyrics);
+      else localStorage.removeItem(LS_LYRICS);
+    } catch {
+      /* the words are still on the screen */
+    }
+  }, [lyrics]);
 
   // Push smoothing amount into the per-hand landmark smoothers.
   useEffect(() => {
@@ -1836,6 +1859,14 @@ export default function SimpleMode() {
               </div>
             )}
           </div>
+
+          {/* The words, beside the thing making them. */}
+          <LyricPad
+            value={lyrics}
+            onChange={setLyrics}
+            chordLabel={selection?.chord?.label ?? null}
+            timedLineCount={takes.length > 0 ? lyrics.split(/\r?\n/).filter((l) => l.trim() !== "").length : 0}
+          />
 
           {/* Now playing */}
           <div className="mt-4 rounded-2xl border border-magenta/30 bg-purple/15 p-4">
