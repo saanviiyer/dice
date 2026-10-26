@@ -3593,10 +3593,6 @@ export default function SimpleMode() {
         </aside>
       </div>
 
-      <footer className="mt-8 text-xs text-white/40">
-        Best in Chrome/Edge. Camera requires HTTPS or localhost. Hand tracking:
-        MediaPipe Tasks Vision · Audio: Web Audio API.
-      </footer>
     </div>
   );
 }
