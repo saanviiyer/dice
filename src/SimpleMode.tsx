@@ -70,6 +70,7 @@ import { InputLevelMeter } from "./InputLevelMeter";
 import BeatTransport from "./BeatTransport";
 import BeatboxChat from "./BeatboxChat";
 import LyricPad from "./LyricPad";
+import SongFinder from "./SongFinder";
 import Timeline from "./Timeline";
 import type { MixerTrackState } from "./lib/producerMixer";
 import { secondsPerBar } from "./lib/transport";
@@ -2106,6 +2107,15 @@ export default function SimpleMode() {
                     </p>
                   )}
                 </div>
+
+                <SongFinder
+                  onProgression={(text) => {
+                    setProgressionText(text);
+                    setChordQuery("");
+                  }}
+                  onLyrics={setLyrics}
+                  hasLyrics={lyrics.trim() !== ""}
+                />
 
                 {/* Hear it played, not just held.
                     A progression you have to perform before you know whether

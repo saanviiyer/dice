@@ -21,6 +21,7 @@ One build has two front doors. The website serves the marketing page at `/` and 
 - **The wall.** Stack video takes in a grid, record over them with a count-in, add lyrics as captions, and bounce the grid and the full mix to one video. You can import a video file to produce over. Imported files are not uploaded. Each take has a level in the mix panel. Takes are gain-staged by how many are playing and pass through a limiter, so a stack does not clip, and the guide runs quieter while you record over it.
 - **Share song.** A link holds the tempo, key, chords, beat, basslines, lyrics and voice. The data sits after the `#`, so it is not sent to a server. Audio is never put in the link.
 - **Projects.** Save, open, rename and delete named projects from a shelf in produce mode.
+- **Bring in a song.** In progression mode, a lyrics search asks [LRCLIB](https://lrclib.net), an open database with no key and no account, and drops the words into the notepad. Where the database has timings, they arrive as stamps the wall can caption from. This is the only part of dice that sends anything anywhere, so it is off until you switch it on, and the panel says what it sends. Chords for a particular song cannot be looked up: the sites that hold them are licensed or would have to be scraped. Paste a sheet instead, chords above the words or in `[brackets]`, and dice reads the progression into the chord box and the words into the pad.
 - **Lyrics.** A notepad sits beside the camera in play mode. It holds the same sheet the wall uses, so what you write while playing is already the prompt you sing from and the caption burnt into the bounce. A button writes the chord you are holding in at the cursor. The sheet stays in this browser and travels in a shared song link.
 - **Colour.** The studio ships dark red. The picker in the header changes the hue of the whole palette, not the background alone, since every contrast in the interface comes from one ladder of that red. Each colour keeps the brightness it had, so the ink stays readable; rotating hue while keeping HSL lightness does not hold, because a yellow ground at the maroon's lightness is much brighter and measured 2.5 to 1 against the text where the red measures 7.9. Grounds that would still come out too light are darkened until they clear 4.6 to 1.
 
@@ -31,11 +32,13 @@ git clone https://github.com/saanviiyer/dice
 cd dice
 npm install
 npm run dev          # site at /, studio at /#/studio
-npm test             # 721 tests (vitest)
+npm test             # 746 tests (vitest)
 npm run build        # tsc -b and vite build, output in dist/
 ```
 
 Use Chrome or Edge. The camera needs HTTPS or localhost.
+
+Nothing leaves the machine except the optional lyrics search, which is off by default and sends only what you type into it.
 
 ### Desktop app
 
