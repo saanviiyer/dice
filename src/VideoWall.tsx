@@ -180,6 +180,8 @@ export default function VideoWall({
   // back - the blob is dropped and its object URL revoked - so deleting one is
   // two clicks rather than a modal nobody reads.
   const [confirming, setConfirming] = useState<number | null>(null);
+  /** The wall over the whole window, for looking at rather than working beside. */
+  const [expanded, setExpanded] = useState(false);
 
   const videoRefs = useRef(new Map<number, HTMLVideoElement>());
   const liveRef = useRef<HTMLVideoElement | null>(null);
@@ -367,6 +369,20 @@ export default function VideoWall({
   useEffect(() => {
     if (playing) stageLevels(guiding);
   }, [playing, guiding, stageLevels]);
+
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setExpanded(false);
+    };
+    window.addEventListener("keydown", onKey);
+    const wasOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = wasOverflow;
+    };
+  }, [expanded]);
 
   // Playhead, for the caption during playback.
   useEffect(() => {
@@ -620,8 +636,14 @@ export default function VideoWall({
   const message = error || recordError || "";
 
   return (
-    <section className="rounded-2xl border border-salmonDim/30 bg-maroon/40 p-4">
-      <div className="mb-3 flex items-baseline justify-between gap-2">
+    <section
+      className={
+        expanded
+          ? "fixed inset-0 z-50 overflow-y-auto border-0 bg-maroonDeep p-4 sm:p-8"
+          : "rounded-2xl border border-salmonDim/30 bg-maroon/40 p-4"
+      }
+    >
+      <div className="mb-3 flex flex-wrap items-baseline gap-2">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-bone/80">
           the wall
         </h2>
@@ -630,6 +652,20 @@ export default function VideoWall({
             ? "no takes yet"
             : `${shown.length} of ${takes.length} on the wall`}
         </span>
+
+        {/* The wall lives in a column a third of the page wide, which is the
+            right size while you are working next to it and too small to watch
+            four takes in. */}
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          title={
+            expanded ? "Put the wall back in its column" : "Fill the window with the wall"
+          }
+          className="ml-auto rounded-lg border border-salmonDim/45 px-2.5 py-1 text-xs font-semibold text-chalk transition hover:bg-salmon/10"
+        >
+          {expanded ? "close" : "expand"}
+        </button>
       </div>
 
       {/* Record, and everything a stacked take needs to land on the beat. */}
@@ -746,7 +782,9 @@ export default function VideoWall({
         </p>
       ) : (
         <div
-          className="relative grid gap-1.5 overflow-hidden rounded-xl bg-maroonInk/50 p-1.5"
+          className={`relative grid gap-1.5 overflow-hidden rounded-xl bg-maroonInk/50 p-1.5 ${
+            expanded ? "mx-auto w-full max-w-5xl" : ""
+          }`}
           style={{ gridTemplateColumns: `repeat(${Math.max(1, grid.cols)}, minmax(0, 1fr))` }}
         >
           {shown.map((t) => (
