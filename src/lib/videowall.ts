@@ -106,6 +106,14 @@ export interface VideoTake {
   muted?: boolean;
   /** This take's own level in the mix, 0..1. Absent means unity. */
   level?: number;
+  /**
+   * How much of the head of this take to skip on playback, in milliseconds.
+   *
+   * A take recorded over the wall starts rolling just before the guide starts,
+   * and the singer hears the guide late and is heard late by the amount the
+   * audio system reports. Skipping that much puts the take back on the guide.
+   */
+  leadInMs?: number;
   /** Brought in from a file rather than recorded here. */
   imported?: boolean;
   /** This browser could not decode it. Shown as such rather than as black. */
@@ -140,14 +148,59 @@ export function visibleTakes(takes: VideoTake[]): VideoTake[] {
 }
 
 /**
+ * The lead-in for a new take.
+ *
+ * `guideZeroAt` is the clock time at which the guide was at its own start, read
+ * back from where the guide really was, so a slow start is already counted.
+ * Never negative, since a take cannot be started before its first frame.
+ */
+export function measureLeadInMs(
+  guideZeroAt: number,
+  recorderStartedAt: number,
+  roundTripMs = 0
+): number {
+  const gap = guideZeroAt - recorderStartedAt + Math.max(0, roundTripMs || 0);
+  return Number.isFinite(gap) ? Math.max(0, Math.round(gap)) : 0;
+}
+
+/**
+ * How to bring a playing take back to where it should be.
+ *
+ * Each take is its own media element on its own clock. A small error is closed
+ * by a slight change of speed, which is inaudible. A large one needs a seek,
+ * which is audible, so it is kept for errors that are already worse than a
+ * jump. `driftSec` is positive when the take is ahead.
+ */
+export function driftCorrection(driftSec: number): { rate: number; seekBy: number | null } {
+  if (!Number.isFinite(driftSec)) return { rate: 1, seekBy: null };
+  const size = Math.abs(driftSec);
+  if (size < 0.015) return { rate: 1, seekBy: null };
+  if (size > 0.2) return { rate: 1, seekBy: -driftSec };
+  return { rate: Math.max(0.95, Math.min(1.05, 1 - driftSec * 0.5)), seekBy: null };
+}
+
+/** What a take is worth once its lead-in is skipped. */
+export function playableMs(take: VideoTake): number {
+  const total = take.durationMs || 0;
+  if (total <= 0) return 0;
+  const lead = Math.max(0, Math.min(total, take.leadInMs ?? 0));
+  return total - lead;
+}
+
+/**
  * How long the wall runs: the longest take, since they all start together.
+ *
+ * Measured from where each take actually starts playing, not from its first
+ * frame, or a take with two seconds of lead-in would hold the wall open for
+ * two seconds after it had finished.
+ *
  * Zero when nothing has a known duration yet, which the caller treats as "let
  * the elements tell us when they end" rather than "stop immediately".
  */
 export function wallDurationMs(takes: VideoTake[]): number {
   const live = visibleTakes(takes);
   if (live.length === 0) return 0;
-  return live.reduce((max, t) => Math.max(max, t.durationMs || 0), 0);
+  return live.reduce((max, t) => Math.max(max, playableMs(t)), 0);
 }
 
 /**

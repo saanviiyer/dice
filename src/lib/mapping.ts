@@ -45,6 +45,27 @@ export interface Selection {
   degree: number;
 }
 
+/** What the hand's chord should make sound. */
+export type HandVoice = "silent" | "strum" | "arp" | "block";
+
+/**
+ * Which voice a held chord drives.
+ *
+ * Turning the hand synth off wins over everything else, because it is the one
+ * setting that promises silence. The chord is still read, so the harmonizer can
+ * keep following the hand.
+ */
+export function handVoice(cfg: {
+  handSynthOn: boolean;
+  strumOn?: boolean;
+  arpOn?: boolean;
+}): HandVoice {
+  if (!cfg.handSynthOn) return "silent";
+  if (cfg.strumOn) return "strum";
+  if (cfg.arpOn) return "arp";
+  return "block";
+}
+
 function resolveExtension(cfg: MappingConfig): ChordExtension {
   if (cfg.extension) return cfg.extension;
   if (cfg.seventh) return "7th";

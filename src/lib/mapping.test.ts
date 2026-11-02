@@ -5,6 +5,7 @@ import {
   yToCutoff,
   mapHandsToSelection,
   type MappingConfig,
+  handVoice,
 } from "./mapping";
 import type { HandPose } from "./gestures";
 
@@ -104,5 +105,18 @@ describe("mapHandsToSelection", () => {
     );
     expect(sel.degree).toBe(0);
     expect(sel.chord?.label).toBe("I");
+  });
+});
+
+describe("what a held chord sounds through", () => {
+  it("is silent with the hand synth off, whatever else is on", () => {
+    expect(handVoice({ handSynthOn: false })).toBe("silent");
+    expect(handVoice({ handSynthOn: false, strumOn: true, arpOn: true })).toBe("silent");
+  });
+
+  it("otherwise uses strum, then the arpeggiator, then the held chord", () => {
+    expect(handVoice({ handSynthOn: true, strumOn: true, arpOn: true })).toBe("strum");
+    expect(handVoice({ handSynthOn: true, arpOn: true })).toBe("arp");
+    expect(handVoice({ handSynthOn: true })).toBe("block");
   });
 });

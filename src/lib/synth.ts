@@ -140,6 +140,7 @@ export class Synth {
    */
   private kitBus: GainNode | null = null;
   private recorderDest: MediaStreamAudioDestinationNode | null = null;
+  private voiceDest: MediaStreamAudioDestinationNode | null = null;
   private noiseBuf: AudioBuffer | null = null;
   /** Pick/hammer transient level, 0..1. See SoundConfig.attackNoise. */
   private attackNoise = 0;
@@ -729,6 +730,44 @@ export class Synth {
    * A MediaStream of the full output for recording. Created lazily and kept
    * connected; capturing it does not affect normal playback.
    */
+  /**
+   * The microphone alone, for a take stacked over other takes.
+   *
+   * The full mix holds the beat and the synth. A second take recorded from it
+   * holds them again, a little out of time with the first, so a stack built
+   * that way gets muddier with every take.
+   */
+  getVoiceStream(): MediaStream | null {
+    if (!this.ctx || !this.micHub) return null;
+    if (!this.voiceDest) {
+      this.voiceDest = this.ctx.createMediaStreamDestination();
+      this.micHub.connect(this.safetyLimiter(this.voiceDest));
+    }
+    return this.voiceDest.stream;
+  }
+
+  /**
+   * A limiter feeding `dest`, returning the node to connect into.
+   *
+   * The trim is needed because a DynamicsCompressorNode adds its own makeup gain
+   * after compressing, so on its own it pushes peaks over full scale. Measured on
+   * a recorded take with the beat on, peaks reached 1.15 without the trim.
+   */
+  private safetyLimiter(dest: AudioNode): AudioNode {
+    const ctx = this.ctx!;
+    const limiter = ctx.createDynamicsCompressor();
+    limiter.threshold.value = -6;
+    limiter.knee.value = 0;
+    limiter.ratio.value = 20;
+    limiter.attack.value = 0.001;
+    limiter.release.value = 0.25;
+    const trim = ctx.createGain();
+    trim.gain.value = 0.75;
+    limiter.connect(trim);
+    trim.connect(dest);
+    return limiter;
+  }
+
   getRecordingStream(): MediaStream | null {
     if (!this.ctx || !this.recordBus) return null;
     if (!this.recorderDest) {
@@ -743,16 +782,7 @@ export class Synth {
       // singing harmonies over a beat sounds like: clipped, and clipped in the
       // file, where no amount of turning it down afterwards helps.
       //
-      // It sits just under zero and only works on peaks that would otherwise
-      // have been flattened anyway, so a take still sounds like what was heard
-      // while it was being made.
-      const limiter = this.ctx.createDynamicsCompressor();
-      limiter.threshold.value = -1.5;
-      limiter.knee.value = 0;
-      limiter.ratio.value = 20;
-      limiter.attack.value = 0.003;
-      limiter.release.value = 0.25;
-      limiter.connect(this.recorderDest);
+      const limiter = this.safetyLimiter(this.recorderDest);
       this.recordBus.connect(limiter);
       // Also fold the raw microphone into the recording (but NOT the speakers):
       // micHub -> recorder only. This way a capture always contains the user's
@@ -1028,6 +1058,7 @@ export class Synth {
       this.drumBus = null;
       this.kitBus = null;
       this.recorderDest = null;
+      this.voiceDest = null;
       this.noiseBuf = null;
       this.micStream = null;
       this.micSourceNode = null;

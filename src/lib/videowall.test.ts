@@ -11,6 +11,9 @@ import {
   importedLabel,
   looksPlayable,
   takeLevel,
+  playableMs,
+  measureLeadInMs,
+  driftCorrection,
 } from "./videowall";
 
 const take = (over: Partial<VideoTake> = {}): VideoTake => ({
@@ -233,5 +236,76 @@ describe("balancing the takes", () => {
     expect(takeLevel({ level: Number.NaN }, 1)).toBe(1);
     expect(takeLevel({ level: -2 }, 1)).toBe(0);
     expect(takeLevel({ level: 5 }, 1)).toBe(1);
+  });
+});
+
+describe("lead-in on a take recorded against the wall", () => {
+  const take = (over: Partial<VideoTake> = {}): VideoTake => ({
+    id: 1,
+    url: "blob:x",
+    blob: new Blob(),
+    label: "take 1",
+    durationMs: 8000,
+    ...over,
+  });
+
+  it("counts a take from where it starts playing, not from its first frame", () => {
+    // The gap before the guide began is not part of the performance.
+    expect(playableMs(take({ leadInMs: 2000 }))).toBe(6000);
+    expect(playableMs(take())).toBe(8000);
+  });
+
+  it("measures the wall from the longest playable take", () => {
+    // Without this a take with two seconds of lead-in holds the wall open for
+    // two seconds after it has finished.
+    const takes = [take({ id: 1, durationMs: 8000, leadInMs: 2000 }), take({ id: 2, durationMs: 7000 })];
+    expect(wallDurationMs(takes)).toBe(7000);
+  });
+
+  it("refuses a lead-in longer than the take itself", () => {
+    expect(playableMs(take({ durationMs: 3000, leadInMs: 9000 }))).toBe(0);
+    expect(playableMs(take({ durationMs: 3000, leadInMs: -500 }))).toBe(3000);
+  });
+
+  it("says nothing about a take whose length is not known yet", () => {
+    expect(playableMs(take({ durationMs: 0, leadInMs: 500 }))).toBe(0);
+  });
+})
+
+describe("keeping takes together", () => {
+  it("skips what was captured before the guide reached its start", () => {
+    expect(measureLeadInMs(1050, 1000)).toBe(50);
+    expect(measureLeadInMs(1050, 1000, 30)).toBe(80);
+  });
+
+  it("never asks a take to start before its first frame", () => {
+    expect(measureLeadInMs(900, 1000)).toBe(0);
+    expect(measureLeadInMs(Number.NaN, 1000)).toBe(0);
+  });
+
+  it("leaves a take alone when it is close enough to hear as together", () => {
+    expect(driftCorrection(0.01)).toEqual({ rate: 1, seekBy: null });
+    expect(driftCorrection(-0.01)).toEqual({ rate: 1, seekBy: null });
+  });
+
+  it("closes a small error with speed, slowing a take that is ahead", () => {
+    const ahead = driftCorrection(0.05);
+    const behind = driftCorrection(-0.05);
+    expect(ahead.seekBy).toBeNull();
+    expect(ahead.rate).toBeLessThan(1);
+    expect(behind.rate).toBeGreaterThan(1);
+  });
+
+  it("keeps the speed change too small to hear", () => {
+    expect(driftCorrection(0.19).rate).toBeGreaterThanOrEqual(0.95);
+    expect(driftCorrection(-0.19).rate).toBeLessThanOrEqual(1.05);
+  });
+
+  it("seeks a take that started late by the 0.41s measured in the studio", () => {
+    expect(driftCorrection(-0.41)).toEqual({ rate: 1, seekBy: 0.41 });
+  });
+
+  it("does nothing with a position it cannot read", () => {
+    expect(driftCorrection(Number.NaN)).toEqual({ rate: 1, seekBy: null });
   });
 });

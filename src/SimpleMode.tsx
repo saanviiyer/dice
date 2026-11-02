@@ -3,6 +3,7 @@ import type { HandLandmarker } from "@mediapipe/tasks-vision";
 import { createHandLandmarker } from "./lib/handLandmarker";
 import { readHand, type Landmark, type HandPose } from "./lib/gestures";
 import {
+  handVoice,
   mapHandsToSelection,
   type Selection,
   type PlayMode,
@@ -329,6 +330,11 @@ export default function SimpleMode() {
   // Strum mode: the fingers fret the chord and the hand's up-and-down movement
   // sounds it, one string at a time, the way a guitar is played.
   const [strumOn, setStrumOn] = useState<boolean>(false);
+  // Off leaves the hand reading chords with no sound of its own, for singing
+  // with your hands in shot or with the harmonizer following along.
+  const [handSynthOn, setHandSynthOn] = useState<boolean>(true);
+  /** What the next take should skip at its head. See VideoTake.leadInMs. */
+  const pendingLeadInRef = useRef<number>(0);
   // How hard the strings are hit. The held chord is silent in strum mode, so
   // this is the whole level of the instrument while strumming.
   const [strumLevel, setStrumLevel] = useState<number>(0.85);
@@ -470,6 +476,7 @@ export default function SimpleMode() {
     latchOn,
     strumOn,
     strumLevel,
+    handSynthOn,
     bpm: arpBpm,
     progression: progressionSlots.map((s) => s.chord),
   });
@@ -485,6 +492,7 @@ export default function SimpleMode() {
       latchOn,
       strumOn,
       strumLevel,
+      handSynthOn,
       bpm: arpBpm,
       progression: progressionSlots.map((s) => s.chord),
     };
@@ -499,6 +507,7 @@ export default function SimpleMode() {
     latchOn,
     strumOn,
     strumLevel,
+    handSynthOn,
     arpBpm,
     progressionSlots,
   ]);
@@ -1062,7 +1071,15 @@ export default function SimpleMode() {
         synth.setCutoff(cutoff);
         synth.setExpression(expr);
 
-        if (c.strumOn) {
+        const voice = handVoice(c);
+        if (voice === "silent") {
+          arpRef.current?.setChord([]);
+          synth.playFreqs([]);
+          // Nothing fretted, so the trackpad has nothing to strum either.
+          if (strumChordRef.current.length > 0) dampStrings();
+          strumChordNameRef.current = "";
+          strumChordRef.current = [];
+        } else if (voice === "strum") {
           // The hand frets and the trackpad strums: your fingers pick the
           // chord, and it stays silent until the other hand sweeps the pad.
           // Two hands doing two jobs, which is how a guitar is played and is
@@ -1080,7 +1097,7 @@ export default function SimpleMode() {
           }
           strumChordNameRef.current = name;
           strumChordRef.current = notes;
-        } else if (c.arpOn) {
+        } else if (voice === "arp") {
           arpRef.current?.setChord(notes);
           synth.playFreqs([]); // arp handles note-on; keep block chord silent
         } else {
@@ -1240,7 +1257,12 @@ export default function SimpleMode() {
   // silence).
   const getSharedMic = useCallback(async (): Promise<MediaStream> => {
     if (micStreamRef.current) return micStreamRef.current;
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // The browser's defaults are built for phone calls. Echo cancellation, noise
+    // suppression and auto gain treat a held sung note as noise to remove, and
+    // they duck and warp it. BeatboxChat already turns them off for this reason.
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+    });
     micStreamRef.current = stream;
     synthRef.current.setMicStream(stream);
     setMicReady(true);
@@ -1372,13 +1394,14 @@ export default function SimpleMode() {
     return "";
   };
 
-  const startRecording = useCallback(async () => {
+  const startRecording = useCallback(async (opts: { voiceOnly: boolean }) => {
     setRecordError("");
+    pendingLeadInRef.current = 0;
     const synth = synthRef.current;
-    const audioStream = synth.getRecordingStream();
+    const audioStream = opts.voiceOnly ? synth.getVoiceStream() : synth.getRecordingStream();
     if (!audioStream) {
       setRecordError("Start the app (Enable camera & sound) first.");
-      return;
+      return null;
     }
     // Make sure the mic is live so the recording captures the voice, not just
     // the synths. Recording still proceeds (without voice) if it is denied.
@@ -1419,6 +1442,7 @@ export default function SimpleMode() {
         // side by side you would have had to re-import files the app had just
         // thrown away. Each take keeps its own save button.
         const elapsed = performance.now() - recordStartRef.current;
+        const lead = pendingLeadInRef.current;
         setTakes((prev) => {
           const id = nextTakeId.current++;
           return [
@@ -1429,22 +1453,31 @@ export default function SimpleMode() {
               blob,
               label: takeLabel(prev.length, elapsed),
               durationMs: Math.round(elapsed),
+              leadInMs: lead,
             },
           ];
         });
       };
+      // Read before start(). Measured against a tone at a known time, a file's
+      // zero sits within 7ms of this call. The recorder's own start event can
+      // arrive more than 100ms later, or not at all, so it is no use as a clock.
+      const startedAt = performance.now();
       rec.start();
       recorderRef.current = rec;
-      recordStartRef.current = performance.now();
+      recordStartRef.current = startedAt;
       setRecordElapsed(0);
       setRecording(true);
       recordTimerRef.current = setInterval(() => {
         setRecordElapsed(performance.now() - recordStartRef.current);
       }, 200);
+      const mic = micStreamRef.current?.getAudioTracks()[0];
+      const settings = (mic?.getSettings() ?? {}) as MediaTrackSettings & { latency?: number };
+      return { startedAt, inputLatencySec: settings.latency ?? 0 };
     } catch (err) {
       setRecordError(
         err instanceof Error ? err.message : "Recording failed to start."
       );
+      return null;
     }
   }, [getSharedMic]);
 
@@ -1881,6 +1914,7 @@ export default function SimpleMode() {
                   Now playing{" "}
                   {arpOn && <span className="text-orange">· arp</span>}
                   {strumOn && <span className="text-orange">· strum</span>}
+                  {!handSynthOn && <span className="text-yellow"> · hand synth off</span>}
                   {latchOn && <span className="text-yellow"> · latch</span>}
                   {drumsOn && <span className="text-orange"> · drums</span>}
                   {harmonizerOn && (
@@ -2394,6 +2428,20 @@ export default function SimpleMode() {
               </span>
             </label>
 
+            <label className="mb-3 flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={handSynthOn}
+                onChange={(e) => setHandSynthOn(e.target.checked)}
+              />
+              Hand synth{" "}
+              <span className="text-xs text-white/55">
+                {handSynthOn
+                  ? "(your hand plays chords)"
+                  : "(off: your hand makes no sound)"}
+              </span>
+            </label>
+
             <label className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
@@ -2468,6 +2516,9 @@ export default function SimpleMode() {
             canRecord={started}
             elapsedMs={recordElapsed}
             onRecord={startRecording}
+            onLeadIn={(ms) => {
+              pendingLeadInRef.current = ms;
+            }}
             onStop={stopRecording}
             recordError={recordError}
             getCameraStream={() => cameraStreamRef.current}

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { HandLandmarker } from "@mediapipe/tasks-vision";
 import { createHandLandmarker } from "./lib/handLandmarker";
 import { readHand, type Landmark, type HandPose } from "./lib/gestures";
+import { handVoice } from "./lib/mapping";
 import { mapHandsToSelection, type Selection } from "./lib/mapping";
 import {
   NOTE_NAMES,
@@ -156,6 +157,7 @@ export default function ProducerMode() {
   const [volume, setVolume] = useState<number>(0.5);
   const [twoHand, setTwoHand] = useState<boolean>(false);
   const [latchOn, setLatchOn] = useState<boolean>(false);
+  const [handSynthOn, setHandSynthOn] = useState<boolean>(true);
   const [arpOn, setArpOn] = useState<boolean>(false);
   const [arpBpm, setArpBpm] = useState<number>(90);
   const [drumsOn, setDrumsOn] = useState<boolean>(false);
@@ -376,10 +378,10 @@ export default function ProducerMode() {
   }, [restoreProjectIfReady]);
 
   // Latest instrument config for the rAF loop.
-  const cfgRef = useRef({ tonic, scale, octave, extension, twoHand, arpOn, latchOn });
+  const cfgRef = useRef({ tonic, scale, octave, extension, twoHand, arpOn, latchOn, handSynthOn });
   useEffect(() => {
-    cfgRef.current = { tonic, scale, octave, extension, twoHand, arpOn, latchOn };
-  }, [tonic, scale, octave, extension, twoHand, arpOn, latchOn]);
+    cfgRef.current = { tonic, scale, octave, extension, twoHand, arpOn, latchOn, handSynthOn };
+  }, [tonic, scale, octave, extension, twoHand, arpOn, latchOn, handSynthOn]);
 
   useEffect(() => {
     if (!latchOn) latchedChordRef.current = null;
@@ -529,7 +531,11 @@ export default function ProducerMode() {
         }
         synth.setCutoff(cutoff);
         synth.setExpression(expr);
-        if (c.arpOn) {
+        const voice = handVoice(c);
+        if (voice === "silent") {
+          arpRef.current?.setChord([]);
+          synth.playFreqs([]);
+        } else if (voice === "arp") {
           arpRef.current?.setChord(notes);
           synth.playFreqs([]);
         } else {
@@ -676,7 +682,10 @@ export default function ProducerMode() {
   // silence).
   const getSharedMic = useCallback(async (): Promise<MediaStream> => {
     if (micStreamRef.current) return micStreamRef.current;
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // Phone-call processing warps sung notes. See the same call in SimpleMode.
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+    });
     micStreamRef.current = stream;
     synthRef.current.setMicStream(stream);
     setMicReady(true);
@@ -2202,6 +2211,14 @@ export default function ProducerMode() {
             />
           </label>
           <div className="flex flex-col gap-2 text-sm">
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={handSynthOn}
+                onChange={(e) => setHandSynthOn(e.target.checked)}
+              />
+              Hand synth
+            </label>
             <label className="flex items-center gap-2">
               <input
                 type="checkbox"

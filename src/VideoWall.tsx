@@ -34,7 +34,12 @@ import {
   type VideoTake,
 } from "./lib/videowall";
 import { lyricAt, parseLyrics, wrapLyric } from "./lib/lyrics";
-import { looksPlayable, takeLevel } from "./lib/videowall";
+import {
+  driftCorrection,
+  looksPlayable,
+  measureLeadInMs,
+  takeLevel,
+} from "./lib/videowall";
 
 export interface VideoWallProps {
   takes: VideoTake[];
@@ -47,7 +52,12 @@ export interface VideoWallProps {
   /** False until camera and sound are on. */
   canRecord: boolean;
   elapsedMs: number;
-  onRecord(): void | Promise<void>;
+  /** Start the recorder. Resolves with when it started, or null if it did not. */
+  onRecord(opts: {
+    voiceOnly: boolean;
+  }): Promise<{ startedAt: number; inputLatencySec: number } | null>;
+  /** How much of the head of the take being recorded to skip on playback. */
+  onLeadIn(ms: number): void;
   onStop(): void;
   recordError?: string;
   /** The live camera, drawn in the next cell so the wall previews itself. */
@@ -70,6 +80,42 @@ const EXPORT_WIDTH = 1280;
 const EXPORT_HEIGHT = 720;
 const EXPORT_FPS = 30;
 const COUNT_IN_BEATS = 4;
+/** The most a take's start can be moved by hand, in milliseconds. */
+const MAX_NUDGE_MS = 3000;
+
+/**
+ * Get a paused video to a position and hold until it can play from there.
+ *
+ * A take that has never played has nothing loaded, so its first seek and first
+ * play are slow. Measured in the studio, a new take started 412ms after the take
+ * beside it and stayed that far behind. Waiting here, before anything starts,
+ * lets every take start from the same instant. The timeout means one bad file
+ * cannot hold the wall up.
+ */
+function primeVideo(v: HTMLVideoElement, seconds: number, timeoutMs = 3000): Promise<void> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      window.clearTimeout(timer);
+      v.removeEventListener("seeked", check);
+      v.removeEventListener("canplay", check);
+      v.removeEventListener("error", finish);
+      resolve();
+    };
+    const check = () => {
+      if (!v.seeking && v.readyState >= 3) finish();
+    };
+    const timer = window.setTimeout(finish, timeoutMs);
+    v.addEventListener("seeked", check);
+    v.addEventListener("canplay", check);
+    v.addEventListener("error", finish);
+    v.pause();
+    if (Math.abs(v.currentTime - seconds) > 0.001) v.currentTime = seconds;
+    check();
+  });
+}
 
 /** Roughly how many characters of caption fit across the picture. */
 const CAPTION_CHARS = 40;
@@ -159,6 +205,7 @@ export default function VideoWall({
   canRecord,
   elapsedMs,
   onRecord,
+  onLeadIn,
   onStop,
   recordError,
   getCameraStream,
@@ -173,6 +220,8 @@ export default function VideoWall({
   const [error, setError] = useState("");
   const [countIn, setCountIn] = useState(true);
   const [singAlong, setSingAlong] = useState(true);
+  /** Null until chosen. Then a stacked take defaults to the microphone alone. */
+  const [voiceOnlyChoice, setVoiceOnlyChoice] = useState<boolean | null>(null);
   const [positionMs, setPositionMs] = useState(0);
   /** Whether what is playing is the guide for a take being recorded. */
   const [guiding, setGuiding] = useState(false);
@@ -193,13 +242,20 @@ export default function VideoWall({
   const busRef = useRef<{
     ctx: AudioContext;
     input: GainNode;
-    limiter: DynamicsCompressorNode;
+    output: GainNode;
   } | null>(null);
+
+  /** Clock time at which the wall was at its start, read from a playing take. */
+  const anchorRef = useRef<number | null>(null);
+  /** Bumped by every stop, so a start still getting ready knows to give up. */
+  const playTicket = useRef(0);
+  const lastSeekRef = useRef(new Map<number, number>());
 
   const shown = useMemo(() => visibleTakes(takes), [takes]);
   const hiddenTakes = useMemo(() => takes.filter((t) => t.hidden), [takes]);
   const durationMs = wallDurationMs(takes);
   const full = shown.length >= MAX_TAKES;
+  const voiceOnly = voiceOnlyChoice ?? shown.length > 0;
 
   // The live cell is the slot the next take will fill, so the grid is laid out
   // with room for it while there is room to be had. No camera, no cell: a
@@ -214,8 +270,10 @@ export default function VideoWall({
    */
   const cues = useMemo(() => parseLyrics(lyrics, durationMs), [lyrics, durationMs]);
   const timedPrompt = cues.length > 0;
+  // While the guide runs, its position is the song's position. The recorder's
+  // own clock is slightly ahead of it.
   const promptLine = recording
-    ? lyricAt(cues, elapsedMs)
+    ? lyricAt(cues, playing ? positionMs : elapsedMs)
     : playing
       ? lyricAt(cues, positionMs)
       : "";
@@ -249,16 +307,18 @@ export default function VideoWall({
     if (busRef.current && busRef.current.ctx === ctx) return busRef.current;
     const input = ctx.createGain();
     const limiter = ctx.createDynamicsCompressor();
-    // A safety limiter, not a sound: it should only catch the peaks the gain
-    // staging cannot predict, which is why it sits just under zero.
-    limiter.threshold.value = -3;
+    limiter.threshold.value = -6;
     limiter.knee.value = 0;
     limiter.ratio.value = 20;
-    limiter.attack.value = 0.003;
+    limiter.attack.value = 0.001;
     limiter.release.value = 0.25;
+    // The compressor adds makeup gain of its own, which this takes back out.
+    const output = ctx.createGain();
+    output.gain.value = 0.75;
     input.connect(limiter);
-    limiter.connect(ctx.destination);
-    const made = { ctx, input, limiter };
+    limiter.connect(output);
+    output.connect(ctx.destination);
+    const made = { ctx, input, output };
     busRef.current = made;
     return made;
   }, [getContext]);
@@ -313,17 +373,36 @@ export default function VideoWall({
   );
 
   const stopAll = useCallback(() => {
-    each((v) => {
+    playTicket.current += 1;
+    anchorRef.current = null;
+    each((v, take) => {
       v.pause();
-      v.currentTime = 0;
+      v.playbackRate = 1;
+      v.currentTime = (take.leadInMs ?? 0) / 1000;
     });
     setPlaying(false);
     setGuiding(false);
     setPositionMs(0);
   }, [each]);
 
-  const playAll = useCallback(
-    (opts: { guide?: boolean } = {}) => {
+  /** Get every take on the wall ready to start from its own first note. */
+  const prepareTakes = useCallback(async () => {
+    await Promise.all(
+      shown.map((t) => {
+        const v = videoRefs.current.get(t.id);
+        return v && !t.broken ? primeVideo(v, (t.leadInMs ?? 0) / 1000) : undefined;
+      })
+    );
+  }, [shown]);
+
+  /**
+   * Start the prepared takes together.
+   *
+   * Resolves with the clock time the wall was at its start, read from where a
+   * playing take really is, or null if nothing played.
+   */
+  const playNow = useCallback(
+    (opts: { guide?: boolean } = {}): Promise<number | null> => {
       setError("");
       const bus = ensureBus();
       // The click that started this is a user gesture, so a suspended context
@@ -332,22 +411,51 @@ export default function VideoWall({
       if (bus && bus.ctx.state === "suspended") void bus.ctx.resume();
       const live = bus && bus.ctx.state === "running" ? bus : null;
 
+      const starts: Promise<unknown>[] = [];
+      anchorRef.current = null;
+      lastSeekRef.current.clear();
       each((v, take) => {
-        v.currentTime = 0;
         // A muted take keeps its picture and loses its sound, which is how you
         // produce over an imported clip: the video stays, the audio is yours.
         v.muted = !!take.muted;
+        v.playbackRate = 1;
         if (live) routeTake(live, take.id, v);
-        void v.play().catch(() => {
-          /* a take that will not play is reported by the wall, not thrown */
-        });
+        starts.push(
+          v.play().catch(() => {
+            /* a take that will not play is reported by the wall, not thrown */
+          })
+        );
       });
       setGuiding(opts.guide === true);
       stageLevels(opts.guide === true);
       setPlaying(true);
+
+      const ticket = playTicket.current;
+      return Promise.race([
+        Promise.all(starts),
+        new Promise((resolve) => window.setTimeout(resolve, 1500)),
+      ]).then(() => {
+        if (ticket !== playTicket.current) return null;
+        const master = shown.find((t) => {
+          const v = videoRefs.current.get(t.id);
+          return v && !t.broken && !v.paused;
+        });
+        const v = master && videoRefs.current.get(master.id);
+        if (!master || !v) return null;
+        const anchor = performance.now() - (v.currentTime - (master.leadInMs ?? 0) / 1000) * 1000;
+        anchorRef.current = anchor;
+        return anchor;
+      });
     },
-    [each, ensureBus, routeTake, stageLevels]
+    [each, ensureBus, routeTake, shown, stageLevels]
   );
+
+  const playAll = useCallback(async () => {
+    const ticket = ++playTicket.current;
+    await prepareTakes();
+    if (ticket !== playTicket.current) return;
+    await playNow();
+  }, [prepareTakes, playNow]);
 
   // Show the live camera in the empty cell. Attached in an effect rather than
   // during render because the stream arrives when the camera does, which is
@@ -387,10 +495,38 @@ export default function VideoWall({
   // Playhead, for the caption during playback.
   useEffect(() => {
     if (!playing) return;
-    const first = shown[0] ? videoRefs.current.get(shown[0].id) : null;
     const timer = window.setInterval(() => {
-      setPositionMs((first?.currentTime ?? 0) * 1000);
+      const anchor = anchorRef.current;
+      if (anchor !== null) setPositionMs(performance.now() - anchor);
     }, 100);
+    return () => window.clearInterval(timer);
+  }, [playing]);
+
+  // Hold the takes together while they play. Each is its own media element on
+  // its own clock, so a good start is not enough on its own.
+  useEffect(() => {
+    if (!playing) return;
+    const timer = window.setInterval(() => {
+      const anchor = anchorRef.current;
+      if (anchor === null) return;
+      const now = performance.now();
+      for (const t of shown) {
+        const v = videoRefs.current.get(t.id);
+        if (!v || t.broken || v.paused || v.ended || v.seeking) continue;
+        const target = (now - anchor) / 1000 + (t.leadInMs ?? 0) / 1000;
+        if (Number.isFinite(v.duration) && target >= v.duration) continue;
+        const fix = driftCorrection(v.currentTime - target);
+        if (fix.seekBy !== null) {
+          // A seek takes time to land, so give it a moment before judging it.
+          if (now - (lastSeekRef.current.get(t.id) ?? -Infinity) < 1000) continue;
+          lastSeekRef.current.set(t.id, now);
+          v.playbackRate = 1;
+          v.currentTime = target;
+        } else {
+          v.playbackRate = fix.rate;
+        }
+      }
+    }, 200);
     return () => window.clearInterval(timer);
   }, [playing, shown]);
 
@@ -445,6 +581,12 @@ export default function VideoWall({
     [takes, onChange]
   );
 
+  const setLeadIn = useCallback(
+    (id: number, leadInMs: number) =>
+      onChange(takes.map((t) => (t.id === id ? { ...t, leadInMs } : t))),
+    [takes, onChange]
+  );
+
   const toggleMuted = useCallback(
     (id: number) => onChange(takes.map((t) => (t.id === id ? { ...t, muted: !t.muted } : t))),
     [takes, onChange]
@@ -484,29 +626,49 @@ export default function VideoWall({
   );
 
   /**
-   * Start a take: count in, roll, then start the guide.
+   * Start a take: get the guide ready, count in, roll, then start the guide.
    *
-   * The recorder is started before the guide rather than after it, because
-   * whichever goes second starts late and the one that must not start late is
-   * the take being recorded - a guide a few milliseconds early is inaudible,
-   * a take a few milliseconds late is a stack that drifts.
+   * The guide is readied before the count-in so it can start the moment the
+   * count ends. The recorder goes first because a take can skip its own first
+   * moments on playback and cannot get back a moment it never recorded. How far
+   * the guide really started behind the recorder is measured, along with the
+   * audio latency the browser reports, and stored as the take's lead-in.
    */
   const startTake = useCallback(async () => {
     setError("");
+    const guide = singAlong && shown.length > 0;
     try {
-      if (countIn) {
-        setCountingIn(true);
-        await onCountIn(COUNT_IN_BEATS);
-        setCountingIn(false);
+      setCountingIn(true);
+      if (guide) {
+        playTicket.current += 1;
+        await prepareTakes();
       }
-      await onRecord();
+      if (countIn) await onCountIn(COUNT_IN_BEATS);
+      setCountingIn(false);
+      const roll = await onRecord({ voiceOnly });
+      if (!roll || !guide) return;
       // Played as a guide: quieter, so the microphone hears you and not it.
-      if (singAlong && shown.length > 0) playAll({ guide: true });
+      const zero = await playNow({ guide: true });
+      if (zero === null) return;
+      const ctx = getContext();
+      const outputSec = (ctx?.baseLatency ?? 0) + (ctx?.outputLatency ?? 0);
+      onLeadIn(measureLeadInMs(zero, roll.startedAt, (outputSec + roll.inputLatencySec) * 1000));
     } catch (err) {
       setCountingIn(false);
       setError(err instanceof Error ? err.message : "The take could not be started.");
     }
-  }, [countIn, onCountIn, onRecord, singAlong, shown.length, playAll]);
+  }, [
+    countIn,
+    getContext,
+    onCountIn,
+    onLeadIn,
+    onRecord,
+    playNow,
+    prepareTakes,
+    shown.length,
+    singAlong,
+    voiceOnly,
+  ]);
 
   const stopTake = useCallback(() => {
     onStop();
@@ -562,7 +724,7 @@ export default function VideoWall({
       // staging and the limiter, so the file sounds like what you just played
       // rather than like four takes summed raw. A muted take sits at zero on
       // its own fader, so it is out of the mix as well as out of the room.
-      bus.limiter.connect(dest);
+      bus.output.connect(dest);
 
       const videoStream = canvas.captureStream(EXPORT_FPS);
       const mixed = new MediaStream([
@@ -601,15 +763,16 @@ export default function VideoWall({
         });
         drawCaption(
           g,
-          lyricAt(cues, performance.now() - startedAt),
+          lyricAt(cues, performance.now() - (anchorRef.current ?? startedAt)),
           EXPORT_WIDTH,
           EXPORT_HEIGHT
         );
         raf = requestAnimationFrame(draw);
       };
 
+      await prepareTakes();
       rec.start();
-      playAll();
+      await playNow();
       draw();
 
       // Fall back to a bounded wait when no duration is known, rather than
@@ -621,7 +784,7 @@ export default function VideoWall({
       await finished;
       stopAll();
       try {
-        busRef.current?.limiter.disconnect(dest);
+        busRef.current?.output.disconnect(dest);
       } catch {
         /* already gone */
       }
@@ -630,7 +793,7 @@ export default function VideoWall({
     } finally {
       setExporting(false);
     }
-  }, [getContext, shown, durationMs, cues, playAll, stopAll, ensureBus, routeTake]);
+  }, [getContext, shown, durationMs, cues, playNow, prepareTakes, stopAll, ensureBus, routeTake]);
 
   const busy = exporting || countingIn;
   const message = error || recordError || "";
@@ -717,6 +880,18 @@ export default function VideoWall({
           />
           sing with the wall
         </label>
+        <label
+          className="flex items-center gap-1.5 text-xs text-bone/70"
+          title="Records your microphone alone. The beat, the synth and the harmonizer stay out of this take."
+        >
+          <input
+            type="checkbox"
+            checked={voiceOnly}
+            disabled={recording}
+            onChange={(e) => setVoiceOnlyChoice(e.target.checked)}
+          />
+          voice only
+        </label>
 
         <label
           className={`cursor-pointer rounded-lg border border-salmonDim/45 px-3 py-1.5 text-sm font-semibold text-chalk transition hover:bg-salmon/10 ${
@@ -746,7 +921,7 @@ export default function VideoWall({
         <div className="ml-auto flex items-center gap-2">
           <button
             type="button"
-            onClick={() => (playing ? stopAll() : playAll())}
+            onClick={() => (playing ? stopAll() : void playAll())}
             disabled={shown.length === 0 || busy || recording}
             className="rounded-lg border border-salmonDim/45 px-3 py-1.5 text-sm font-semibold text-chalk transition hover:bg-salmon/10 disabled:opacity-45"
           >
@@ -796,7 +971,7 @@ export default function VideoWall({
                 }}
                 src={t.url}
                 playsInline
-                preload="metadata"
+                preload="auto"
                 onLoadedMetadata={(e) => setDuration(t.id, e.currentTarget.duration)}
                 onError={() => markBroken(t.id)}
                 // An imported clip is not a mirror image of anybody, so it is
@@ -811,10 +986,48 @@ export default function VideoWall({
                   This browser cannot decode {t.label}. Try an MP4 or WebM.
                 </div>
               )}
-              <span className="pointer-events-none absolute bottom-1 left-1.5 text-[10px] text-chalk/80 drop-shadow">
-                {t.label}
-                {t.muted && <span className="ml-1 text-salmon">muted</span>}
-              </span>
+              <div className="bg-maroonInk/70 px-2 py-1.5 text-[10px] text-chalk/80">
+                <div className="truncate">
+                  {t.label}
+                  {t.muted && <span className="ml-1 text-salmon">muted</span>}
+                </div>
+                <label className="mt-1 flex items-center gap-1.5">
+                  <span className="w-9 shrink-0 text-bone/60">volume</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={t.level ?? 1}
+                    disabled={t.muted}
+                    aria-label={`Volume of ${t.label}`}
+                    onChange={(e) => setLevel(t.id, Number(e.target.value))}
+                    className="min-w-0 flex-1 accent-salmon disabled:opacity-40"
+                  />
+                  <span className="w-7 shrink-0 text-right tabular-nums text-bone/60">
+                    {Math.round((t.level ?? 1) * 100)}%
+                  </span>
+                </label>
+                <label
+                  className="mt-0.5 flex items-center gap-1.5"
+                  title="If this take sounds late, move this until it sits with the others."
+                >
+                  <span className="w-9 shrink-0 text-bone/60">sync</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={MAX_NUDGE_MS}
+                    step={10}
+                    value={Math.min(MAX_NUDGE_MS, t.leadInMs ?? 0)}
+                    aria-label={`Skip the start of ${t.label}`}
+                    onChange={(e) => setLeadIn(t.id, Number(e.target.value))}
+                    className="min-w-0 flex-1 accent-salmon"
+                  />
+                  <span className="w-7 shrink-0 text-right tabular-nums text-bone/60">
+                    {((t.leadInMs ?? 0) / 1000).toFixed(2)}
+                  </span>
+                </label>
+              </div>
               {/* Per-take controls, on the take, and always on it: hiding them
                   until the pointer happens to cross the cell means a take you
                   want rid of has no visible way to go. */}
@@ -933,55 +1146,6 @@ export default function VideoWall({
         </div>
       )}
 
-      {shown.length > 1 && (
-        <details className="mt-3 border-t border-salmonDim/20 pt-2">
-          <summary className="cursor-pointer list-none text-xs font-semibold uppercase tracking-wide text-bone/60">
-            mix
-            <span className="ml-2 font-normal text-bone/40">
-              {shown.length} takes playing together
-            </span>
-          </summary>
-          <div className="mt-2 flex flex-col gap-1.5">
-            {shown.map((t) => {
-              const level = Math.round((t.level ?? 1) * 100);
-              return (
-                <div key={t.id} className="flex items-center gap-2 text-[11px]">
-                  <span className="w-24 shrink-0 truncate text-bone/70">{t.label}</span>
-                  <input
-                    type="range"
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    value={t.level ?? 1}
-                    disabled={t.muted}
-                    aria-label={`Level of ${t.label}`}
-                    onChange={(e) => setLevel(t.id, Number(e.target.value))}
-                    className="flex-1 accent-salmon disabled:opacity-40"
-                  />
-                  <span className="w-9 shrink-0 text-right tabular-nums text-bone/45">
-                    {t.muted ? "muted" : `${level}%`}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => toggleMuted(t.id)}
-                    className="rounded px-1.5 py-0.5 text-salmon transition hover:bg-salmon/15"
-                  >
-                    {t.muted ? "unmute" : "mute"}
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-          <p className="mt-2 text-[11px] leading-relaxed text-bone/45">
-            These levels are the mix: what you hear on play all, what you hear
-            while recording over it, and what lands in the bounce. They sit on
-            top of the staging that keeps a stack of takes from clipping, so
-            turning one up balances it against the others rather than pushing
-            the whole wall into the red.
-          </p>
-        </details>
-      )}
-
       <details className="mt-3 border-t border-salmonDim/20 pt-2">
         <summary className="cursor-pointer list-none text-xs font-semibold uppercase tracking-wide text-bone/60">
           lyrics
@@ -1025,10 +1189,11 @@ export default function VideoWall({
       )}
 
       <p className="mt-2 text-[11px] leading-relaxed text-bone/45">
-        A take records you with the full mix - synth, drums, effects, harmonizer,
-        loops and your voice.{" "}
+        {voiceOnly
+          ? "This take records your microphone alone. "
+          : "This take records the full mix with your voice. "}
         {shown.length > 0 &&
-          "With “sing with the wall” on, the takes already up here play while you record the next one; headphones keep them out of it."}
+          "With “sing with the wall” on, the takes already up here play while you record. Wear headphones, or the microphone records them too."}
       </p>
 
       {message && <p className="mt-2 text-xs text-live">{message}</p>}
