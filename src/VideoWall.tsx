@@ -36,9 +36,18 @@ import {
 import { lyricAt, parseLyrics, wrapLyric } from "./lib/lyrics";
 import {
   driftCorrection,
+  fileExtension,
+  nextSeekGap,
+  SEEK_GAP_MS,
+  loopBars,
+  loopDrift,
+  loopPeriodMs,
   looksPlayable,
   measureLeadInMs,
   takeLevel,
+  takePosition,
+  wallEnds,
+  VIDEO_MIMES,
 } from "./lib/videowall";
 
 export interface VideoWallProps {
@@ -64,6 +73,9 @@ export interface VideoWallProps {
   getCameraStream(): MediaStream | null;
   /** Clicks a bar in before recording starts. Resolves when the bar is over. */
   onCountIn(beats: number): Promise<void>;
+
+  /** Studio tempo, so a looping take repeats on whole bars. */
+  bpm?: number;
 
   /** The words, shown as a prompt while you sing and burnt into the bounce. */
   lyrics: string;
@@ -213,6 +225,7 @@ export default function VideoWall({
   lyrics,
   onLyrics,
   onImport,
+  bpm,
 }: VideoWallProps) {
   const [playing, setPlaying] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -250,10 +263,15 @@ export default function VideoWall({
   /** Bumped by every stop, so a start still getting ready knows to give up. */
   const playTicket = useRef(0);
   const lastSeekRef = useRef(new Map<number, number>());
+  /** How long each take waits between jumps, longer for one that keeps missing. */
+  const seekGapRef = useRef(new Map<number, number>());
+  /** How long each looping take's jump back has been taking, in seconds. */
+  const wrapLagRef = useRef(new Map<number, number>());
 
   const shown = useMemo(() => visibleTakes(takes), [takes]);
   const hiddenTakes = useMemo(() => takes.filter((t) => t.hidden), [takes]);
-  const durationMs = wallDurationMs(takes);
+  const durationMs = wallDurationMs(takes, bpm);
+  const endsByItself = wallEnds(takes);
   const full = shown.length >= MAX_TAKES;
   const voiceOnly = voiceOnlyChoice ?? shown.length > 0;
 
@@ -414,6 +432,7 @@ export default function VideoWall({
       const starts: Promise<unknown>[] = [];
       anchorRef.current = null;
       lastSeekRef.current.clear();
+      seekGapRef.current.clear();
       each((v, take) => {
         // A muted take keeps its picture and loses its sound, which is how you
         // produce over an imported clip: the video stays, the audio is yours.
@@ -513,30 +532,94 @@ export default function VideoWall({
       for (const t of shown) {
         const v = videoRefs.current.get(t.id);
         if (!v || t.broken || v.paused || v.ended || v.seeking) continue;
-        const target = (now - anchor) / 1000 + (t.leadInMs ?? 0) / 1000;
-        if (Number.isFinite(v.duration) && target >= v.duration) continue;
-        const fix = driftCorrection(v.currentTime - target);
+        // Still decoding its way to the next frame. Judged now, it would look
+        // late and be sent somewhere else to decode from all over again.
+        if (v.readyState < 3) continue;
+        const target = takePosition(t, (now - anchor) / 1000, bpm);
+        if (!t.loop && Number.isFinite(v.duration) && target >= v.duration) continue;
+        const period = t.loop ? loopPeriodMs(t, bpm) / 1000 : 0;
+        const drift = t.loop ? loopDrift(v.currentTime, target, period) : v.currentTime - target;
+        const fix = driftCorrection(drift);
         if (fix.seekBy !== null) {
           // A seek takes time to land, so give it a moment before judging it.
-          if (now - (lastSeekRef.current.get(t.id) ?? -Infinity) < 1000) continue;
+          // A take that is late again soon after a jump is one the computer
+          // cannot keep up with, and every jump makes it decode from the last
+          // keyframe again. So the wait doubles each time, up to eight seconds.
+          const last = lastSeekRef.current.get(t.id) ?? -Infinity;
+          const gap = seekGapRef.current.get(t.id) ?? SEEK_GAP_MS;
+          if (now - last < gap) continue;
+          seekGapRef.current.set(t.id, nextSeekGap(gap, now - last));
           lastSeekRef.current.set(t.id, now);
           v.playbackRate = 1;
           v.currentTime = target;
         } else {
-          v.playbackRate = fix.rate;
+          if (fix.rate === 1) seekGapRef.current.delete(t.id);
+          // Each change of speed restarts the pitch keeper on that take's sound.
+          if (Math.abs(v.playbackRate - fix.rate) > 0.002) v.playbackRate = fix.rate;
         }
       }
     }, 200);
     return () => window.clearInterval(timer);
-  }, [playing, shown]);
+  }, [playing, shown, bpm]);
 
-  // When the longest take ends, the wall has finished.
+  /**
+   * Turn looping takes round at their loop point.
+   *
+   * Checked every frame, because the browser's own `loop` would go back to the
+   * first frame and replay the lead-in, and it would also run the take to its
+   * end where the loop should stop on a bar line. A check on the slower sync
+   * timer would land the wrap up to a fifth of a second late.
+   */
   useEffect(() => {
-    if (!playing) return;
+    if (!playing || !shown.some((t) => t.loop)) return;
+    let raf = 0;
+    const tick = () => {
+      const anchor = anchorRef.current;
+      if (anchor !== null) {
+        const elapsed = (performance.now() - anchor) / 1000;
+        for (const t of shown) {
+          if (!t.loop || t.broken) continue;
+          const v = videoRefs.current.get(t.id);
+          if (!v || v.seeking) continue;
+          const lead = (t.leadInMs ?? 0) / 1000;
+          const period = loopPeriodMs(t, bpm) / 1000;
+          const end = lead + period;
+          if (v.ended || v.currentTime >= end - 0.008 || v.currentTime < lead - 0.03) {
+            // A jump takes time to land, and the music keeps moving meanwhile,
+            // so aim ahead by what this take's last jumps took. Measured before
+            // this, every wrap landed about 80ms late.
+            const lag = wrapLagRef.current.get(t.id) ?? 0.05;
+            v.currentTime = takePosition(t, elapsed + lag, bpm);
+            v.addEventListener(
+              "seeked",
+              () => {
+                const a = anchorRef.current;
+                if (a === null) return;
+                const want = takePosition(t, (performance.now() - a) / 1000, bpm);
+                const miss = loopDrift(v.currentTime, want, period);
+                wrapLagRef.current.set(t.id, Math.max(0, Math.min(0.3, lag - miss * 0.7)));
+              },
+              { once: true }
+            );
+            if (v.paused) void v.play().catch(() => {});
+          }
+        }
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [playing, shown, bpm]);
+
+  // When the last take that does not loop ends, the wall has finished. Loops
+  // stop with it. While a take is recording, loops carry on under it, and a wall
+  // made only of loops plays until it is stopped.
+  useEffect(() => {
+    if (!playing || recording || !endsByItself) return;
     if (durationMs <= 0) return;
-    const timer = window.setTimeout(() => setPlaying(false), durationMs + 250);
+    const timer = window.setTimeout(() => stopAll(), durationMs + 250);
     return () => window.clearTimeout(timer);
-  }, [playing, durationMs]);
+  }, [playing, recording, endsByItself, durationMs, stopAll]);
 
   const setDuration = useCallback(
     (id: number, seconds: number) => {
@@ -584,6 +667,11 @@ export default function VideoWall({
   const setLeadIn = useCallback(
     (id: number, leadInMs: number) =>
       onChange(takes.map((t) => (t.id === id ? { ...t, leadInMs } : t))),
+    [takes, onChange]
+  );
+
+  const toggleLoop = useCallback(
+    (id: number) => onChange(takes.map((t) => (t.id === id ? { ...t, loop: !t.loop } : t))),
     [takes, onChange]
   );
 
@@ -731,11 +819,7 @@ export default function VideoWall({
         ...videoStream.getVideoTracks(),
         ...dest.stream.getAudioTracks(),
       ]);
-      const mimeType = pickMime([
-        "video/webm;codecs=vp9,opus",
-        "video/webm;codecs=vp8,opus",
-        "video/webm",
-      ]);
+      const mimeType = pickMime(VIDEO_MIMES);
       const rec = mimeType ? new MediaRecorder(mixed, { mimeType }) : new MediaRecorder(mixed);
       const chunks: BlobPart[] = [];
       rec.ondataavailable = (e) => {
@@ -744,7 +828,10 @@ export default function VideoWall({
 
       const finished = new Promise<void>((resolve) => {
         rec.onstop = () => {
-          download(new Blob(chunks, { type: rec.mimeType || "video/webm" }), `dice-wall-${stamp()}.webm`);
+          {
+            const type = rec.mimeType || "video/webm";
+            download(new Blob(chunks, { type }), `dice-wall-${stamp()}.${fileExtension(type)}`);
+          }
           resolve();
         };
       });
@@ -990,6 +1077,16 @@ export default function VideoWall({
                 <div className="truncate">
                   {t.label}
                   {t.muted && <span className="ml-1 text-salmon">muted</span>}
+                  {t.loop && (
+                    <span className="ml-1 text-salmon">
+                      {(() => {
+                        const bars = loopBars(t, bpm);
+                        return bars
+                          ? `loops every ${bars} ${bars === 1 ? "bar" : "bars"}`
+                          : "loops";
+                      })()}
+                    </span>
+                  )}
                 </div>
                 <label className="mt-1 flex items-center gap-1.5">
                   <span className="w-9 shrink-0 text-bone/60">volume</span>
@@ -1034,6 +1131,21 @@ export default function VideoWall({
               <div className="absolute right-1 top-1 flex gap-1 opacity-80 transition group-hover:opacity-100 focus-within:opacity-100">
                 <button
                   type="button"
+                  onClick={() => toggleLoop(t.id)}
+                  aria-pressed={!!t.loop}
+                  title={
+                    t.loop
+                      ? "Play this take once"
+                      : "Repeat this take while the wall plays, on whole bars of the tempo"
+                  }
+                  className={`rounded px-1.5 py-0.5 text-[10px] hover:bg-maroonInk ${
+                    t.loop ? "bg-salmon text-maroonInk" : "bg-maroonInk/80 text-chalk"
+                  }`}
+                >
+                  loop
+                </button>
+                <button
+                  type="button"
                   onClick={() => toggleMuted(t.id)}
                   aria-pressed={!!t.muted}
                   title={
@@ -1057,7 +1169,7 @@ export default function VideoWall({
                 </button>
                 <button
                   type="button"
-                  onClick={() => download(t.blob, `${t.label.replace(/\s+/g, "-")}.webm`)}
+                  onClick={() => download(t.blob, `${t.label.replace(/\s+/g, "-")}.${fileExtension(t.blob.type)}`)}
                   title="Save just this take"
                   className="rounded bg-maroonInk/80 px-1.5 py-0.5 text-[10px] text-chalk hover:bg-maroonInk"
                 >

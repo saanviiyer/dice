@@ -114,6 +114,8 @@ export interface VideoTake {
    * audio system reports. Skipping that much puts the take back on the guide.
    */
   leadInMs?: number;
+  /** Repeat this take for as long as the wall plays. */
+  loop?: boolean;
   /** Brought in from a file rather than recorded here. */
   imported?: boolean;
   /** This browser could not decode it. Shown as such rather than as black. */
@@ -188,19 +190,86 @@ export function playableMs(take: VideoTake): number {
 }
 
 /**
- * How long the wall runs: the longest take, since they all start together.
+ * How long one pass of a looping take lasts, in milliseconds.
  *
- * Measured from where each take actually starts playing, not from its first
- * frame, or a take with two seconds of lead-in would hold the wall open for
- * two seconds after it had finished.
+ * Snapped down to whole bars at the studio tempo when one is given, because a
+ * take is stopped by hand and almost never ends on a bar line. A loop a fraction
+ * of a bar long falls further off the beat on every pass. A take shorter than
+ * one bar keeps its own length.
+ */
+export function loopPeriodMs(take: VideoTake, bpm?: number, beatsPerBar = 4): number {
+  const playable = playableMs(take);
+  if (playable <= 0) return 0;
+  if (!bpm || !Number.isFinite(bpm) || bpm <= 0) return playable;
+  const barMs = (60000 / bpm) * Math.max(1, beatsPerBar);
+  const bars = Math.floor(playable / barMs + 1e-6);
+  return bars >= 1 ? bars * barMs : playable;
+}
+
+/** How many whole bars a loop lasts, or null when it is not bar-aligned. */
+export function loopBars(take: VideoTake, bpm?: number, beatsPerBar = 4): number | null {
+  if (!bpm || bpm <= 0) return null;
+  const barMs = (60000 / bpm) * Math.max(1, beatsPerBar);
+  const bars = Math.round(loopPeriodMs(take, bpm, beatsPerBar) / barMs);
+  return bars >= 1 && Math.abs(bars * barMs - loopPeriodMs(take, bpm, beatsPerBar)) < 1 ? bars : null;
+}
+
+/**
+ * Where a take should be, in seconds of its own file, this far into the wall.
+ *
+ * A looping take wraps within its playable part: back to the end of its
+ * lead-in, never to its first frame, which would replay what was skipped.
+ */
+export function takePosition(
+  take: VideoTake,
+  elapsedSec: number,
+  bpm?: number
+): number {
+  const lead = Math.max(0, take.leadInMs ?? 0) / 1000;
+  const elapsed = Math.max(0, elapsedSec);
+  if (!take.loop) return lead + elapsed;
+  const period = loopPeriodMs(take, bpm) / 1000;
+  if (period <= 0) return lead + elapsed;
+  return lead + (elapsed % period);
+}
+
+/**
+ * How far `actual` is from `target` on a loop, the short way round.
+ *
+ * Just after a loop wraps, a take still finishing its last pass is "ahead" by
+ * almost a whole period if read in a straight line. Read around the circle it is
+ * a few milliseconds behind, which is what it really is.
+ */
+export function loopDrift(actualSec: number, targetSec: number, periodSec: number): number {
+  const d = actualSec - targetSec;
+  if (!(periodSec > 0)) return d;
+  const half = periodSec / 2;
+  return ((((d + half) % periodSec) + periodSec) % periodSec) - half;
+}
+
+/**
+ * How long the wall runs.
+ *
+ * Takes that do not loop decide it: the longest of them, measured from where
+ * each starts playing, so a take's lead-in does not hold the wall open after it
+ * has finished. Looping takes repeat until then. When every take loops, there is
+ * no natural end, so this is one pass of the longest loop, which is what an
+ * export of an all-loop wall records.
  *
  * Zero when nothing has a known duration yet, which the caller treats as "let
  * the elements tell us when they end" rather than "stop immediately".
  */
-export function wallDurationMs(takes: VideoTake[]): number {
+export function wallDurationMs(takes: VideoTake[], bpm?: number): number {
   const live = visibleTakes(takes);
   if (live.length === 0) return 0;
-  return live.reduce((max, t) => Math.max(max, playableMs(t)), 0);
+  const once = live.filter((t) => !t.loop);
+  if (once.length > 0) return once.reduce((max, t) => Math.max(max, playableMs(t)), 0);
+  return live.reduce((max, t) => Math.max(max, loopPeriodMs(t, bpm)), 0);
+}
+
+/** Whether the wall stops by itself, which it does unless every take loops. */
+export function wallEnds(takes: VideoTake[]): boolean {
+  return visibleTakes(takes).some((t) => !t.loop);
 }
 
 /**
@@ -240,4 +309,50 @@ export function importedLabel(fileName: string, maxChars = 22): string {
 export function takeLabel(index: number, durationMs: number): string {
   const secs = Math.round(durationMs / 100) / 10;
   return durationMs > 0 ? `take ${index + 1} · ${secs}s` : `take ${index + 1}`;
+}
+
+/**
+ * Formats to record video in, cheapest first.
+ *
+ * H.264 goes first because Macs and most phones encode it in hardware. VP9 is
+ * encoded in software, and measured on the same camera it took about three
+ * times the processor, which is time taken from the hand tracking and from
+ * whatever is playing on the wall. MP4 also opens in QuickTime and on a phone.
+ */
+export const VIDEO_MIMES = [
+  "video/mp4;codecs=avc1,opus",
+  "video/mp4;codecs=avc1.42E01F,opus",
+  "video/webm;codecs=h264,opus",
+  "video/webm;codecs=vp9,opus",
+  "video/webm;codecs=vp8,opus",
+  "video/webm",
+];
+
+/** A file ending that matches what a blob holds. */
+export function fileExtension(mime: string): string {
+  const m = mime.toLowerCase();
+  if (m.startsWith("video/mp4") || m.startsWith("audio/mp4")) return "mp4";
+  if (m.includes("matroska")) return "mkv";
+  if (m.startsWith("video/quicktime")) return "mov";
+  if (m.startsWith("audio/ogg")) return "ogg";
+  return "webm";
+}
+
+/** The shortest wait between two jumps of one take, in milliseconds. */
+export const SEEK_GAP_MS = 1000;
+/** The longest. */
+export const SEEK_GAP_MAX_MS = 8000;
+
+/**
+ * How long a take waits before its next jump.
+ *
+ * A jump that came soon after the last one means the take is falling behind
+ * faster than jumps can fix, which is what a busy computer does to a large
+ * imported video. Jumping every second then makes it worse, so the wait
+ * doubles. A take that has gone a long while without needing one starts again
+ * from the shortest wait.
+ */
+export function nextSeekGap(gapMs: number, sinceLastSeekMs: number): number {
+  if (sinceLastSeekMs > gapMs * 3) return SEEK_GAP_MS;
+  return Math.min(SEEK_GAP_MAX_MS, Math.max(SEEK_GAP_MS, gapMs * 2));
 }

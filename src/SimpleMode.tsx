@@ -5,6 +5,7 @@ import { readHand, type Landmark, type HandPose } from "./lib/gestures";
 import {
   handVoice,
   mapHandsToSelection,
+  selectionKey,
   type Selection,
   type PlayMode,
 } from "./lib/mapping";
@@ -76,7 +77,7 @@ import Timeline from "./Timeline";
 import type { MixerTrackState } from "./lib/producerMixer";
 import { secondsPerBar } from "./lib/transport";
 import VideoWall from "./VideoWall";
-import { MAX_TAKES, importedLabel, takeLabel, type VideoTake } from "./lib/videowall";
+import { MAX_TAKES, VIDEO_MIMES, importedLabel, takeLabel, type VideoTake } from "./lib/videowall";
 import { analyzeMelody, type MelodyAnalysis } from "./lib/melody";
 import { progressionInKey, searchProgressions } from "./lib/progressions";
 import {
@@ -413,6 +414,9 @@ export default function SimpleMode() {
 
   // Live readout
   const [selection, setSelection] = useState<Selection | null>(null);
+  const selectionKeyRef = useRef("");
+  const shownPitchRef = useRef<number | null>(null);
+  const pitchShownAtRef = useRef(0);
   const [handCount, setHandCount] = useState<number>(0);
 
   // Parse the progression text into slots (labels + validity + parsed chords).
@@ -1114,10 +1118,26 @@ export default function SimpleMode() {
         const harm = harmonizerRef.current;
         if (harm) {
           harm.update(freqs);
-          setSungPitch(harm.getDetectedPitch());
+          // The readout shows whole hertz, ten times a second at most. Set every
+          // frame, it redrew the whole studio on every frame of the camera.
+          const pitch = harm.getDetectedPitch();
+          const shownPitch = pitch === null ? null : Math.round(pitch);
+          const nowMs = performance.now();
+          if (shownPitch !== shownPitchRef.current && nowMs - pitchShownAtRef.current >= 100) {
+            shownPitchRef.current = shownPitch;
+            pitchShownAtRef.current = nowMs;
+            setSungPitch(shownPitch);
+          }
         }
 
-        setSelection(sel);
+        // Only what the panel shows. A new object every frame redrew the whole
+        // studio thirty times a second, the video wall with it, and that is
+        // what made recording over an imported video stutter.
+        const selKey = selectionKey(sel);
+        if (selKey !== selectionKeyRef.current) {
+          selectionKeyRef.current = selKey;
+          setSelection(sel);
+        }
       }
     }
 
@@ -1418,11 +1438,7 @@ export default function SimpleMode() {
     const mixed = new MediaStream([...videoTracks, ...audioTracks]);
 
     const mimeType = hasVideo
-      ? pickMime([
-          "video/webm;codecs=vp9,opus",
-          "video/webm;codecs=vp8,opus",
-          "video/webm",
-        ])
+      ? pickMime(VIDEO_MIMES)
       : pickMime(["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"]);
 
     try {
@@ -2526,6 +2542,7 @@ export default function SimpleMode() {
             lyrics={lyrics}
             onLyrics={setLyrics}
             onImport={importVideos}
+            bpm={arpBpm}
           />
 
           {/* Playability */}

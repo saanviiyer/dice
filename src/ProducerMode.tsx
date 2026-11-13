@@ -3,7 +3,7 @@ import type { HandLandmarker } from "@mediapipe/tasks-vision";
 import { createHandLandmarker } from "./lib/handLandmarker";
 import { readHand, type Landmark, type HandPose } from "./lib/gestures";
 import { handVoice } from "./lib/mapping";
-import { mapHandsToSelection, type Selection } from "./lib/mapping";
+import { mapHandsToSelection, selectionKey, type Selection } from "./lib/mapping";
 import {
   NOTE_NAMES,
   midiToName,
@@ -227,6 +227,7 @@ export default function ProducerMode() {
   const [importingAudio, setImportingAudio] = useState(false);
 
   const [selection, setSelection] = useState<Selection | null>(null);
+  const selectionKeyRef = useRef("");
   const [handCount, setHandCount] = useState<number>(0);
 
   const base = useMemo(() => deejaiBase(), []);
@@ -542,7 +543,12 @@ export default function ProducerMode() {
           arpRef.current?.setChord([]);
           synth.playFreqs(freqs);
         }
-        setSelection(sel);
+        // Only when the panel would change. Every frame redrew the studio.
+        const selKey = selectionKey(sel);
+        if (selKey !== selectionKeyRef.current) {
+          selectionKeyRef.current = selKey;
+          setSelection(sel);
+        }
       }
     }
     // Poll the transport ~20fps for a smooth playhead + count-in readout.

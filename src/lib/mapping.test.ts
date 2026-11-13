@@ -6,6 +6,8 @@ import {
   mapHandsToSelection,
   type MappingConfig,
   handVoice,
+  selectionKey,
+  type Selection,
 } from "./mapping";
 import type { HandPose } from "./gestures";
 
@@ -118,5 +120,26 @@ describe("what a held chord sounds through", () => {
     expect(handVoice({ handSynthOn: true, strumOn: true, arpOn: true })).toBe("strum");
     expect(handVoice({ handSynthOn: true, arpOn: true })).toBe("arp");
     expect(handVoice({ handSynthOn: true })).toBe("block");
+  });
+});
+
+describe("selectionKey", () => {
+  const base: Selection = {
+    chord: { label: "I", name: "C major", notes: [60, 64, 67], freqs: [261.6, 329.6, 392] } as Selection["chord"],
+    rest: false,
+    cutoffHz: 2000,
+    expression: 0.5,
+    octaveShift: 0,
+    inversion: 0,
+    degree: 0,
+  };
+
+  it("ignores what moves every frame and the panel does not draw", () => {
+    expect(selectionKey({ ...base, cutoffHz: 900, expression: 0.9 })).toBe(selectionKey(base));
+  });
+
+  it("changes when the chord or its voicing changes", () => {
+    expect(selectionKey({ ...base, inversion: 1 })).not.toBe(selectionKey(base));
+    expect(selectionKey({ ...base, chord: null, rest: true, degree: -1 })).not.toBe(selectionKey(base));
   });
 });

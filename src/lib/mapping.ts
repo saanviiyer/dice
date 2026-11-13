@@ -45,6 +45,16 @@ export interface Selection {
   degree: number;
 }
 
+/**
+ * The parts of a selection a panel draws. Two selections with the same key draw
+ * the same, so a frame loop can skip telling React about every camera frame.
+ */
+export function selectionKey(sel: Selection): string {
+  const c = sel.chord;
+  const chord = c ? `${c.label}|${c.name}|${c.notes.join(",")}` : "";
+  return `${sel.rest}|${sel.degree}|${sel.inversion}|${chord}`;
+}
+
 /** What the hand's chord should make sound. */
 export type HandVoice = "silent" | "strum" | "arp" | "block";
 

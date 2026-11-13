@@ -14,6 +14,16 @@ import {
   playableMs,
   measureLeadInMs,
   driftCorrection,
+  loopPeriodMs,
+  loopBars,
+  takePosition,
+  loopDrift,
+  wallEnds,
+  VIDEO_MIMES,
+  fileExtension,
+  nextSeekGap,
+  SEEK_GAP_MS,
+  SEEK_GAP_MAX_MS,
 } from "./videowall";
 
 const take = (over: Partial<VideoTake> = {}): VideoTake => ({
@@ -307,5 +317,102 @@ describe("keeping takes together", () => {
 
   it("does nothing with a position it cannot read", () => {
     expect(driftCorrection(Number.NaN)).toEqual({ rate: 1, seekBy: null });
+  });
+});
+
+describe("looping a take", () => {
+  const take = (over: Partial<VideoTake> = {}): VideoTake => ({
+    id: 1,
+    url: "blob:x",
+    blob: new Blob(),
+    label: "take 1",
+    durationMs: 5300,
+    ...over,
+  });
+
+  it("snaps a loop down to whole bars at the tempo", () => {
+    // 120 bpm in 4/4 is 2s a bar. A 5.3s take loops every 2 bars, 4s.
+    expect(loopPeriodMs(take(), 120)).toBe(4000);
+    expect(loopBars(take(), 120)).toBe(2);
+  });
+
+  it("counts the bars from after the lead-in", () => {
+    expect(loopPeriodMs(take({ durationMs: 4100, leadInMs: 200 }), 120)).toBe(2000);
+  });
+
+  it("keeps the take's own length when it is shorter than a bar", () => {
+    expect(loopPeriodMs(take({ durationMs: 1500 }), 120)).toBe(1500);
+    expect(loopBars(take({ durationMs: 1500 }), 120)).toBeNull();
+  });
+
+  it("keeps the take's own length when there is no tempo to snap to", () => {
+    expect(loopPeriodMs(take())).toBe(5300);
+  });
+
+  it("wraps back to the end of the lead-in, never to the first frame", () => {
+    const t = take({ loop: true, leadInMs: 50 });
+    expect(takePosition(t, 1, 120)).toBeCloseTo(1.05, 6);
+    expect(takePosition(t, 4.5, 120)).toBeCloseTo(0.55, 6);
+    expect(takePosition(t, 8, 120)).toBeCloseTo(0.05, 6);
+  });
+
+  it("runs straight on for a take that does not loop", () => {
+    expect(takePosition(take({ leadInMs: 50 }), 4.5, 120)).toBeCloseTo(4.55, 6);
+  });
+
+  it("reads drift the short way round the loop", () => {
+    // Just before the wrap the take reads 3.98s while the target is 0.02s.
+    expect(loopDrift(3.98, 0.02, 4)).toBeCloseTo(-0.04, 6);
+    expect(loopDrift(0.03, 3.99, 4)).toBeCloseTo(0.04, 6);
+    expect(loopDrift(1.1, 1.0, 4)).toBeCloseTo(0.1, 6);
+  });
+
+  it("lets a take that does not loop decide when the wall ends", () => {
+    const takes = [
+      take({ id: 1, durationMs: 2000, loop: true }),
+      take({ id: 2, durationMs: 9000 }),
+    ];
+    expect(wallDurationMs(takes, 120)).toBe(9000);
+    expect(wallEnds(takes)).toBe(true);
+  });
+
+  it("plays one pass of the longest loop when every take loops", () => {
+    const takes = [
+      take({ id: 1, durationMs: 5300, loop: true }),
+      take({ id: 2, durationMs: 2500, loop: true }),
+    ];
+    expect(wallDurationMs(takes, 120)).toBe(4000);
+    expect(wallEnds(takes)).toBe(false);
+  });
+});
+
+describe("recording formats", () => {
+  it("tries hardware H.264 before the software encoders", () => {
+    const h264 = VIDEO_MIMES.findIndex((m) => m.includes("avc1") || m.includes("h264"));
+    const vp9 = VIDEO_MIMES.findIndex((m) => m.includes("vp9"));
+    expect(h264).toBe(0);
+    expect(vp9).toBeGreaterThan(h264);
+  });
+
+  it("names a saved file after what it holds", () => {
+    expect(fileExtension("video/mp4;codecs=avc1,opus")).toBe("mp4");
+    expect(fileExtension("video/x-matroska;codecs=avc1,opus")).toBe("mkv");
+    expect(fileExtension("video/webm;codecs=vp9,opus")).toBe("webm");
+    expect(fileExtension("video/quicktime")).toBe("mov");
+    expect(fileExtension("")).toBe("webm");
+  });
+});
+
+describe("waiting between jumps", () => {
+  it("doubles the wait for a take that keeps falling behind", () => {
+    expect(nextSeekGap(SEEK_GAP_MS, 1200)).toBe(2000);
+    expect(nextSeekGap(2000, 2100)).toBe(4000);
+    expect(nextSeekGap(4000, 4100)).toBe(SEEK_GAP_MAX_MS);
+    expect(nextSeekGap(SEEK_GAP_MAX_MS, 8100)).toBe(SEEK_GAP_MAX_MS);
+  });
+
+  it("starts again from the shortest wait after a long quiet spell", () => {
+    expect(nextSeekGap(4000, 20000)).toBe(SEEK_GAP_MS);
+    expect(nextSeekGap(SEEK_GAP_MS, Infinity)).toBe(SEEK_GAP_MS);
   });
 });
